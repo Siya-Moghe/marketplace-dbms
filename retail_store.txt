@@ -364,15 +364,21 @@ DELIMITER //
 CREATE PROCEDURE sp_add_to_cart(IN cust_id INT, IN variant_id INT, IN qty INT)
 BEGIN
   DECLARE stock_available INT;
-  SELECT Stock INTO stock_available FROM ProductVariant WHERE VariantID = variant_id;
+
+  SELECT Stock INTO stock_available 
+  FROM productvariant 
+  WHERE VariantID = variant_id;
+
   IF stock_available >= qty THEN
-    INSERT INTO Cart(CustomerID, VariantID, Quantity) VALUES (cust_id, variant_id, qty)
+    INSERT INTO cart(CustomerID, VariantID, Quantity)
+    VALUES (cust_id, variant_id, qty)
     ON DUPLICATE KEY UPDATE Quantity = Quantity + qty;
   ELSE
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Insufficient stock';
   END IF;
 END //
 DELIMITER ;
+
 
 -- sp_remove_from_cart
 DELIMITER //

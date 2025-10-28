@@ -70,6 +70,7 @@ def add_to_cart():
         for _ in cursor.stored_results():
             pass
         # return updated cart
+        conn.commit()
         cursor.close()
         cursor = conn.cursor(dictionary=True)
         cursor.callproc("show_cart", (cust_id,))
@@ -115,12 +116,17 @@ def remove_from_cart():
         cursor.callproc("sp_remove_from_cart", (int(cust_id), int(variant_id)))
         for _ in cursor.stored_results():
             pass
+        conn.commit()
         return jsonify({"success": True, "message": "removed from cart"}), 200
 
     except mysql.connector.Error as err:
+        if conn:
+            conn.rollback()
         return jsonify({"success": False, "error": str(err)}), 400
 
     except Exception as e:
+        if conn:
+            conn.rollback()
         return jsonify({"success": False, "error": str(e)}), 500
 
     finally:

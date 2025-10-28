@@ -1,0 +1,831 @@
+DROP DATABASE IF EXISTS retail_store;
+CREATE DATABASE retail_store;
+USE retail_store;
+
+CREATE TABLE Customer (
+    CustomerID INT PRIMARY KEY,
+    Name VARCHAR(50) NOT NULL,
+    Email VARCHAR(50) NOT NULL UNIQUE,
+    Phone VARCHAR(15) NOT NULL UNIQUE
+);
+
+CREATE TABLE Password (
+    CustomerID INT PRIMARY KEY,
+    Password VARCHAR(200) NOT NULL,
+    CONSTRAINT fk_password_customer
+        FOREIGN KEY (CustomerID) REFERENCES Customer(CustomerID)
+        ON DELETE CASCADE
+);
+
+CREATE TABLE Address (
+    AddressID INT PRIMARY KEY AUTO_INCREMENT,
+    CustomerID INT NOT NULL,
+    AddressLine1 VARCHAR(200) NOT NULL,
+    City VARCHAR(50) NOT NULL,
+    PinCode VARCHAR(10) NOT NULL,
+    AddressType VARCHAR(20) DEFAULT 'Home',
+    CONSTRAINT fk_address_customer
+        FOREIGN KEY (CustomerID) REFERENCES Customer(CustomerID)
+        ON DELETE CASCADE
+);
+
+CREATE TABLE Category (
+    CategoryID INT PRIMARY KEY,
+    CategoryName VARCHAR(50) NOT NULL,
+    Description TEXT,
+    ParentCategoryID INT,
+    CONSTRAINT fk_category_parent
+        FOREIGN KEY (ParentCategoryID) REFERENCES Category(CategoryID)
+        ON DELETE SET NULL
+);
+
+CREATE TABLE Product (
+    ProductID INT PRIMARY KEY,
+    Prod_Name VARCHAR(50) NOT NULL,
+    Description TEXT,
+    CategoryID INT,
+    CONSTRAINT fk_product_category
+        FOREIGN KEY (CategoryID) REFERENCES Category(CategoryID)
+        ON DELETE SET NULL
+);
+
+CREATE TABLE ProductVariant (
+    VariantID INT PRIMARY KEY AUTO_INCREMENT,
+    ProductID INT NOT NULL,
+    Size VARCHAR(20) DEFAULT 'OS',
+    Color VARCHAR(20) DEFAULT 'N/A',
+    Price DECIMAL(10,2) NOT NULL CHECK (Price > 0),
+    Stock INT NOT NULL CHECK (Stock >= 0),
+    UNIQUE(ProductID, Size, Color),
+    CONSTRAINT fk_variant_product
+        FOREIGN KEY (ProductID) REFERENCES Product(ProductID)
+        ON DELETE CASCADE
+);
+
+CREATE TABLE Orders (
+    OrderID INT PRIMARY KEY,
+    CustomerID INT NOT NULL,
+    OrderDate DATE NOT NULL,
+    Status VARCHAR(50) NOT NULL CHECK (Status IN ('Pending','Processing','Shipped','Delivered','Cancelled')),
+    ShippingAddressID INT NOT NULL,
+    TotalAmount DECIMAL(10,2) NOT NULL,
+    CONSTRAINT fk_orders_customer
+        FOREIGN KEY (CustomerID) REFERENCES Customer(CustomerID)
+        ON DELETE CASCADE,
+    CONSTRAINT fk_orders_address
+        FOREIGN KEY (ShippingAddressID) REFERENCES Address(AddressID)
+        ON DELETE RESTRICT
+);
+
+CREATE TABLE OrderDetails (
+    OrderDetailID INT PRIMARY KEY AUTO_INCREMENT,
+    OrderID INT NOT NULL,
+    VariantID INT NOT NULL,
+    Quantity INT NOT NULL CHECK (Quantity > 0),
+    Price DECIMAL(10,2) NOT NULL CHECK (Price >= 0),
+    UNIQUE(OrderID, VariantID),
+    CONSTRAINT fk_orderdetails_order
+        FOREIGN KEY (OrderID) REFERENCES Orders(OrderID)
+        ON DELETE CASCADE,
+    CONSTRAINT fk_orderdetails_variant
+        FOREIGN KEY (VariantID) REFERENCES ProductVariant(VariantID)
+        ON DELETE RESTRICT
+);
+
+CREATE TABLE Payment (
+    PaymentID INT PRIMARY KEY,
+    OrderID INT NOT NULL,
+    PaymentMode VARCHAR(50) NOT NULL,
+    PaymentDate DATE NOT NULL,
+    Amount DECIMAL(10,2) NOT NULL CHECK (Amount >= 0),
+    Status VARCHAR(50),
+    CONSTRAINT fk_payment_order
+        FOREIGN KEY (OrderID) REFERENCES Orders(OrderID)
+        ON DELETE CASCADE
+);
+
+CREATE TABLE Cart (
+    CartID INT PRIMARY KEY AUTO_INCREMENT,
+    CustomerID INT NOT NULL,
+    VariantID INT NOT NULL,
+    Quantity INT NOT NULL CHECK (Quantity > 0),
+    DateAdded DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(CustomerID, VariantID),
+    CONSTRAINT fk_cart_customer
+        FOREIGN KEY (CustomerID) REFERENCES Customer(CustomerID)
+        ON DELETE CASCADE,
+    CONSTRAINT fk_cart_variant
+        FOREIGN KEY (VariantID) REFERENCES ProductVariant(VariantID)
+        ON DELETE CASCADE
+);
+
+CREATE TABLE Wishlist (
+    WishlistID INT PRIMARY KEY AUTO_INCREMENT,
+    CustomerID INT NOT NULL,
+    VariantID INT NOT NULL,
+    DateAdded DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(CustomerID, VariantID),
+    CONSTRAINT fk_wishlist_customer
+        FOREIGN KEY (CustomerID) REFERENCES Customer(CustomerID)
+        ON DELETE CASCADE,
+    CONSTRAINT fk_wishlist_variant
+        FOREIGN KEY (VariantID) REFERENCES ProductVariant(VariantID)
+        ON DELETE CASCADE
+);
+
+CREATE TABLE Review (
+    ReviewID INT PRIMARY KEY,
+    CustomerID INT NOT NULL,
+    VariantID INT NOT NULL,
+    Rating INT NOT NULL CHECK (Rating BETWEEN 1 AND 5),
+    Comment TEXT,
+    ReviewDate DATE NOT NULL,
+    CONSTRAINT fk_review_customer
+        FOREIGN KEY (CustomerID) REFERENCES Customer(CustomerID)
+        ON DELETE CASCADE,
+    CONSTRAINT fk_review_variant
+        FOREIGN KEY (VariantID) REFERENCES ProductVariant(VariantID)
+        ON DELETE CASCADE
+);
+
+CREATE TABLE ProductViewHistory (
+    CustomerID INT NOT NULL,
+    VariantID INT NOT NULL,
+    ViewTimestamp DATETIME,
+    PRIMARY KEY (CustomerID, VariantID),
+    CONSTRAINT fk_pvh_customer
+        FOREIGN KEY (CustomerID) REFERENCES Customer(CustomerID)
+        ON DELETE CASCADE,
+    CONSTRAINT fk_pvh_variant
+        FOREIGN KEY (VariantID) REFERENCES ProductVariant(VariantID)
+        ON DELETE CASCADE
+);
+
+-- INSERTS
+
+INSERT INTO Customer (CustomerID, Name, Email, Phone)
+VALUES
+(1, 'Aarav Mehta', 'aarav.mehta@example.com', '9876543210'),
+(2, 'Riya Sharma', '9123456789', '9123456789'),
+(3, 'Kabir Singh', 'kabir.singh@example.com', '9988776655'),
+(4, 'Ananya Rao', 'ananya.rao@example.com', '9811122233'),
+(5, 'Vikram Patel', 'vikram.patel@example.com', '9090909090');
+
+INSERT INTO Password (CustomerID, Password)
+VALUES
+(1, 'hashed_pw_aarav'),
+(2, 'hashed_pw_riya'),
+(3, 'hashed_pw_kabir'),
+(4, 'hashed_pw_ananya'),
+(5, 'hashed_pw_vikram');
+
+INSERT INTO Address (CustomerID, AddressLine1, City, PinCode, AddressType)
+VALUES
+(1, '12 Lotus Residency, MG Road', 'Mumbai', '400001', 'Home'),
+(2, '24 Green Park', 'Delhi', '110016', 'Home'),
+(3, '7 Lakeview Apartments', 'Bengaluru', '560001', 'Work'),
+(4, '56 Sunrise Colony', 'Hyderabad', '500081', 'Home'),
+(5, '88 Silver Heights', 'Ahmedabad', '380015', 'Home'),
+(1, '45 Business Bay, BKC', 'Mumbai', '400051', 'Work');
+
+INSERT INTO Category (CategoryID, CategoryName, Description, ParentCategoryID)
+VALUES
+(1, 'Electronics', 'Devices, gadgets, and accessories', NULL),
+(2, 'Fashion', 'Clothing, footwear, and accessories', NULL),
+(3, 'Home & Kitchen', 'Furniture, decor, and kitchenware', NULL),
+(4, 'Books', 'Fiction, non-fiction, and academic books', NULL),
+(5, 'Audio', 'Headphones, speakers, and audio equipment', 1);
+
+INSERT INTO Product (ProductID, Prod_Name, Description, CategoryID)
+VALUES
+(1, 'Wireless Over-Ear Headphones', 'Noise-cancelling over-ear headphones', 5),
+(2, 'Smartphone Stand', 'Adjustable metal stand for phones', 1),
+(3, 'Cotton T-shirt', 'Unisex casual t-shirt', 2),
+(4, 'Ceramic Dinner Set', '16-piece dinnerware set', 3),
+(5, 'The Midnight Labyrinth', 'Bestselling fantasy fiction book', 4);
+
+INSERT INTO ProductVariant (ProductID, Size, Color, Price, Stock)
+VALUES
+(1, 'OS', 'Black', 4999.99, 25),
+(2, 'OS', 'Silver', 899.00, 100),
+(3, 'M', 'White', 599.00, 100),
+(3, 'L', 'Blue', 599.00, 100),
+(4, 'OS', 'Ivory', 2499.00, 40),
+(5, 'Paperback', 'N/A', 399.00, 75);
+
+INSERT INTO Orders (OrderID, CustomerID, OrderDate, Status, ShippingAddressID, TotalAmount)
+VALUES
+(101, 1, '2025-10-01', 'Delivered', 1, 5898.99),
+(102, 2, '2025-10-05', 'Processing', 2, 599.00),
+(103, 3, '2025-10-10', 'Shipped', 3, 2499.00),
+(104, 4, '2025-10-15', 'Delivered', 4, 899.00),
+(105, 5, '2025-10-20', 'Pending', 5, 4999.99);
+
+INSERT INTO Payment (PaymentID, OrderID, PaymentMode, PaymentDate, Amount, Status)
+VALUES
+(1001, 101, 'Credit Card', '2025-10-01', 5898.99, 'Success'),
+(1002, 102, 'UPI', '2025-10-05', 599.00, 'Pending'),
+(1003, 103, 'Net Banking', '2025-10-10', 2499.00, 'Success'),
+(1004, 104, 'Debit Card', '2025-10-15', 899.00, 'Success'),
+(1005, 105, 'UPI', '2025-10-20', 4999.00, 'Failed');
+
+INSERT INTO Review (ReviewID, CustomerID, VariantID, Rating, Comment, ReviewDate)
+VALUES
+(201, 1, 1, 5, 'Excellent sound quality and comfort.', '2025-10-02'),
+(202, 2, 3, 4, 'Nice fit and soft fabric.', '2025-10-06'),
+(203, 3, 5, 5, 'Beautiful design and sturdy build.', '2025-10-11'),
+(204, 4, 2, 3, 'Good but slightly overpriced.', '2025-10-16'),
+(205, 5, 6, 5, 'Amazing read! Couldn’t put it down.', '2025-10-21');
+
+INSERT INTO ProductViewHistory (CustomerID, VariantID, ViewTimestamp)
+VALUES
+(1, 1, '2025-09-28 10:15:00'),
+(1, 2, '2025-09-28 10:30:00'),
+(2, 3, '2025-09-29 09:00:00'),
+(3, 5, '2025-09-30 11:45:00'),
+(4, 6, '2025-10-01 14:00:00'),
+(5, 1, '2025-10-02 18:20:00');
+
+INSERT INTO OrderDetails (OrderID, VariantID, Quantity, Price)
+VALUES
+(101, 1, 1, 4999.99),
+(101, 2, 1, 899.00),
+(102, 3, 1, 599.00),
+(103, 5, 1, 2499.00),
+(104, 2, 1, 899.00),
+(105, 1, 1, 4999.00);
+
+
+
+-- (procedures creation)
+
+
+--  show_cart(CustomerID)
+DELIMITER $$
+CREATE PROCEDURE show_cart(IN cust_id INT)
+BEGIN
+    SELECT 
+        p.Prod_Name AS ProductName,
+        CONCAT(v.Size, '/', v.Color) AS Variant,
+        c.Quantity,
+        v.Price,
+        (c.Quantity * v.Price) AS Subtotal
+    FROM Cart c
+    JOIN ProductVariant v ON c.VariantID = v.VariantID
+    JOIN Product p ON v.ProductID = p.ProductID
+    WHERE c.CustomerID = cust_id;
+END $$
+DELIMITER ;
+
+
+-- show_order_details(OrderID)
+DELIMITER $$
+CREATE PROCEDURE show_order_details(IN ord_id INT)
+BEGIN
+    SELECT 
+        p.Prod_Name AS ProductName,
+        CONCAT(v.Size, '/', v.Color) AS Variant,
+        od.Quantity,
+        od.Price,
+        (od.Quantity * od.Price) AS Subtotal
+    FROM OrderDetails od
+    JOIN ProductVariant v ON od.VariantID = v.VariantID
+    JOIN Product p ON v.ProductID = p.ProductID
+    WHERE od.OrderID = ord_id;
+END $$
+DELIMITER ;
+
+
+
+
+-- show_product_catalog(CategoryID, searchKeyword)
+DELIMITER $$
+CREATE PROCEDURE show_product_catalog(
+    IN cat_id INT,
+    IN search_kw VARCHAR(100)
+)
+BEGIN
+    SELECT 
+        p.Prod_Name AS ProductName,
+        CONCAT(v.Size, '/', v.Color) AS Variant,
+        v.Price,
+        v.Stock
+    FROM Product p
+    JOIN ProductVariant v ON p.ProductID = v.ProductID
+    WHERE (cat_id IS NULL OR p.CategoryID = cat_id)
+      AND (search_kw IS NULL OR p.Prod_Name LIKE CONCAT('%', search_kw, '%'));
+END $$
+DELIMITER ;
+
+
+-- show_product_reviews(VariantID)
+DELIMITER $$
+CREATE PROCEDURE show_product_reviews(IN variant_id INT)
+BEGIN
+    SELECT 
+        c.Name AS CustomerName,
+        r.Rating,
+        r.Comment,
+        r.ReviewDate
+    FROM Review r
+    JOIN Customer c ON r.CustomerID = c.CustomerID
+    WHERE r.VariantID = variant_id
+    ORDER BY r.ReviewDate DESC;
+END $$
+DELIMITER ;
+
+
+
+
+
+-- show_recommendations(CustomerID)
+DELIMITER $$
+CREATE PROCEDURE show_recommendations(IN cust_id INT)
+BEGIN
+    SELECT DISTINCT 
+        p.Prod_Name AS ProductName,
+        CONCAT(v.Size, '/', v.Color) AS Variant,
+        v.Price
+    FROM Orders o
+    JOIN OrderDetails od ON o.OrderID = od.OrderID
+    JOIN ProductVariant v ON od.VariantID = v.VariantID
+    JOIN Product p ON v.ProductID = p.ProductID
+    WHERE o.CustomerID = cust_id
+    ORDER BY RAND()
+    LIMIT 5;
+END $$
+DELIMITER ;
+
+
+
+
+--  sp_add_to_cart
+DELIMITER //
+CREATE PROCEDURE sp_add_to_cart(IN cust_id INT, IN variant_id INT, IN qty INT)
+BEGIN
+  DECLARE stock_available INT;
+  SELECT Stock INTO stock_available FROM ProductVariant WHERE VariantID = variant_id;
+  IF stock_available >= qty THEN
+    INSERT INTO Cart(CustomerID, VariantID, Quantity) VALUES (cust_id, variant_id, qty)
+    ON DUPLICATE KEY UPDATE Quantity = Quantity + qty;
+  ELSE
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Insufficient stock';
+  END IF;
+END //
+DELIMITER ;
+
+-- sp_remove_from_cart
+DELIMITER //
+CREATE PROCEDURE sp_remove_from_cart(IN cust_id INT, IN variant_id INT)
+BEGIN
+  DELETE FROM Cart WHERE CustomerID = cust_id AND VariantID = variant_id;
+END //
+DELIMITER ;
+
+-- sp_place_order
+DELIMITER //
+CREATE PROCEDURE sp_place_order(IN cust_id INT)
+BEGIN
+  DECLARE new_order_id INT;
+
+  START TRANSACTION;
+  INSERT INTO Orders(CustomerID, OrderDate, Status) VALUES (cust_id, NOW(), 'Pending');
+  SET new_order_id = LAST_INSERT_ID();
+
+  INSERT INTO OrderDetails(OrderID, VariantID, Quantity, Price)
+  SELECT new_order_id, VariantID, Quantity, Price FROM Cart
+  JOIN ProductVariant USING(VariantID)
+  WHERE CustomerID = cust_id;
+
+  DELETE FROM Cart WHERE CustomerID = cust_id;
+  COMMIT;
+END //
+DELIMITER ;
+
+-- sp_make_payment
+DELIMITER //
+CREATE PROCEDURE sp_make_payment(IN order_id INT, IN method VARCHAR(50), IN amt DECIMAL(10,2))
+BEGIN
+  INSERT INTO Payment(OrderID, PaymentDate, Amount, Method, Status)
+  VALUES(order_id, NOW(), amt, method, 'Success');
+END //
+DELIMITER ;
+
+-- sp_add_review
+DELIMITER //
+CREATE PROCEDURE sp_add_review(IN cust_id INT, IN variant_id INT, IN rating INT, IN comment TEXT)
+BEGIN
+  DECLARE purchased INT;
+  SELECT COUNT(*) INTO purchased
+  FROM Orders o
+  JOIN OrderDetails od ON o.OrderID = od.OrderID
+  WHERE o.CustomerID = cust_id AND od.VariantID = variant_id;
+
+  IF purchased > 0 THEN
+    INSERT INTO Review(CustomerID, VariantID, Rating, Comment, ReviewDate)
+    VALUES(cust_id, variant_id, rating, comment, CURDATE());
+  ELSE
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Cannot review without purchase';
+  END IF;
+END //
+DELIMITER ;
+
+-- sp_update_stock
+DELIMITER //
+CREATE PROCEDURE sp_update_stock(IN variant_id INT, IN new_stock INT)
+BEGIN
+  UPDATE ProductVariant SET Stock = new_stock WHERE VariantID = variant_id;
+END //
+DELIMITER ;
+
+-- show_order_history
+DROP PROCEDURE IF EXISTS show_order_history;
+DELIMITER $$
+CREATE PROCEDURE show_order_history(IN p_CustomerID INT)
+BEGIN
+    SELECT
+        o.OrderID,
+        o.OrderDate,
+        o.Status,
+        o.TotalAmount,
+        GROUP_CONCAT(
+            CONCAT(p.Prod_Name, ' [', v.Size, '/', v.Color, '] x', od.Quantity, ' @', od.Price)
+            ORDER BY od.OrderDetailID SEPARATOR ' || '
+        ) AS Items
+    FROM Orders o
+    JOIN OrderDetails od ON o.OrderID = od.OrderID
+    JOIN ProductVariant v ON od.VariantID = v.VariantID
+    JOIN Product p ON v.ProductID = p.ProductID
+    WHERE o.CustomerID = p_CustomerID
+    GROUP BY o.OrderID, o.OrderDate, o.Status, o.TotalAmount
+    ORDER BY o.OrderDate DESC;
+END $$
+DELIMITER ;
+
+
+-- show_trending_products
+DROP PROCEDURE IF EXISTS show_trending_products;
+DELIMITER $$
+CREATE PROCEDURE show_trending_products(IN p_limit INT)
+BEGIN
+    SELECT
+        v.VariantID,
+        p.Prod_Name AS Prod_Name,
+        v.Size,
+        v.Color,
+        v.Price,
+        v.Stock,
+        COALESCE(vc.views,0) AS Views,
+        COALESCE(oc.ordered_qty,0) AS OrdersQty,
+        (COALESCE(vc.views,0) + COALESCE(oc.ordered_qty,0) * 5) AS TrendScore
+    FROM ProductVariant v
+    JOIN Product p ON v.ProductID = p.ProductID
+    LEFT JOIN (
+        SELECT VariantID, COUNT(*) AS views
+        FROM ProductViewHistory
+        GROUP BY VariantID
+    ) vc ON v.VariantID = vc.VariantID
+    LEFT JOIN (
+        SELECT od.VariantID, SUM(od.Quantity) AS ordered_qty
+        FROM OrderDetails od
+        JOIN Orders o ON od.OrderID = o.OrderID
+        WHERE o.Status <> 'Cancelled'
+        GROUP BY od.VariantID
+    ) oc ON v.VariantID = oc.VariantID
+    ORDER BY TrendScore DESC, OrdersQty DESC, Views DESC
+    LIMIT p_limit;
+END $$
+DELIMITER ;
+
+–  cancel_order
+DROP PROCEDURE IF EXISTS cancel_order;
+DELIMITER $$
+CREATE PROCEDURE cancel_order(IN p_OrderID INT)
+BEGIN
+    DECLARE v_status VARCHAR(50);
+    SELECT Status INTO v_status FROM Orders WHERE OrderID = p_OrderID;
+    IF v_status IS NULL THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Order not found';
+    ELSEIF v_status IN ('Shipped','Delivered') THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Cannot cancel shipped/delivered order';
+    ELSE
+        UPDATE Orders SET Status = 'Cancelled' WHERE OrderID = p_OrderID;
+        -- update_stock_on_cancel trigger will restore stock (if you implemented it)
+    END IF;
+END $$
+DELIMITER ;
+
+-- add_to_wishlist
+DROP PROCEDURE IF EXISTS add_to_wishlist;
+DELIMITER $$
+CREATE PROCEDURE add_to_wishlist(IN p_CustomerID INT, IN p_VariantID INT)
+BEGIN
+    INSERT INTO Wishlist (CustomerID, VariantID, DateAdded)
+    VALUES (p_CustomerID, p_VariantID, CURRENT_TIMESTAMP)
+    ON DUPLICATE KEY UPDATE DateAdded = CURRENT_TIMESTAMP;
+END $$
+DELIMITER ;
+
+-- remove_from_wishlist
+DROP PROCEDURE IF EXISTS remove_from_wishlist;
+DELIMITER $$
+CREATE PROCEDURE remove_from_wishlist(IN p_CustomerID INT, IN p_VariantID INT)
+BEGIN
+    DELETE FROM Wishlist WHERE CustomerID = p_CustomerID AND VariantID = p_VariantID;
+END $$
+DELIMITER ;
+
+--  process_refund
+DROP PROCEDURE IF EXISTS process_refund;
+DELIMITER $$
+CREATE PROCEDURE process_refund(IN p_PaymentID INT)
+BEGIN
+    DECLARE v_OrderID INT;
+    DECLARE v_status VARCHAR(50);
+    SELECT OrderID INTO v_OrderID FROM Payment WHERE PaymentID = p_PaymentID;
+    IF v_OrderID IS NULL THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Payment not found';
+    END IF;
+
+    SELECT Status INTO v_status FROM Payment WHERE PaymentID = p_PaymentID;
+    IF v_status = 'Refunded' THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Payment already refunded';
+    END IF;
+
+    START TRANSACTION;
+        UPDATE Payment SET Status = 'Refunded' WHERE PaymentID = p_PaymentID;
+        UPDATE Orders SET Status = 'Refunded' WHERE OrderID = v_OrderID;
+
+        -- restore stock for each orderdetail
+        UPDATE ProductVariant pv
+        JOIN (
+            SELECT od.VariantID, SUM(od.Quantity) AS qty_sum
+            FROM OrderDetails od
+            WHERE od.OrderID = v_OrderID
+            GROUP BY od.VariantID
+        ) t ON pv.VariantID = t.VariantID
+        SET pv.Stock = pv.Stock + t.qty_sum;
+    COMMIT;
+END $$
+DELIMITER ;
+
+
+
+-- (triggers creation)
+
+-- reduce_stock_on_order
+DELIMITER //
+CREATE TRIGGER reduce_stock_on_order
+AFTER INSERT ON OrderDetails
+FOR EACH ROW
+BEGIN
+  UPDATE ProductVariant
+  SET Stock = Stock - NEW.Quantity
+  WHERE VariantID = NEW.VariantID;
+END //
+DELIMITER ;
+
+-- update_order_status_on_payment
+DELIMITER //
+CREATE TRIGGER update_order_status_on_payment
+AFTER UPDATE ON Payment
+FOR EACH ROW
+BEGIN
+  IF NEW.Status = 'Success' THEN
+    UPDATE Orders SET Status = 'Processing' WHERE OrderID = NEW.OrderID;
+  END IF;
+END //
+DELIMITER ;
+
+-- prevent_review_without_purchase
+DELIMITER //
+CREATE TRIGGER prevent_review_without_purchase
+BEFORE INSERT ON Review
+FOR EACH ROW
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM Orders o
+    JOIN OrderDetails od ON o.OrderID = od.OrderID
+    WHERE o.CustomerID = NEW.CustomerID AND od.VariantID = NEW.VariantID
+  ) THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Customer has not purchased this product';
+  END IF;
+END //
+DELIMITER ;
+
+-- cart_cleanup_zero_stock
+DELIMITER //
+CREATE TRIGGER cart_cleanup_zero_stock
+BEFORE INSERT ON Cart
+FOR EACH ROW
+BEGIN
+  DECLARE stock_now INT;
+  SELECT Stock INTO stock_now FROM ProductVariant WHERE VariantID = NEW.VariantID;
+  IF stock_now = 0 THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Cannot add to cart, out of stock';
+  END IF;
+END //
+DELIMITER ;
+
+-- delete_orders_on_customer_delete
+DELIMITER //
+CREATE TRIGGER delete_orders_on_customer_delete
+AFTER DELETE ON Customer
+FOR EACH ROW
+BEGIN
+  DELETE FROM Orders WHERE CustomerID = OLD.CustomerID;
+  DELETE FROM Review WHERE CustomerID = OLD.CustomerID;
+  DELETE FROM Cart WHERE CustomerID = OLD.CustomerID;
+  DELETE FROM Wishlist WHERE CustomerID = OLD.CustomerID;
+END //
+DELIMITER ;
+
+
+-- update_stock_on_cancel
+DROP TRIGGER IF EXISTS update_stock_on_cancel;
+DELIMITER $$
+CREATE TRIGGER update_stock_on_cancel
+AFTER UPDATE ON Orders
+FOR EACH ROW
+BEGIN
+    IF OLD.Status <> 'Cancelled' AND NEW.Status = 'Cancelled' THEN
+        -- restore stock for all items in that order
+        UPDATE ProductVariant pv
+        JOIN (
+            SELECT VariantID, SUM(Quantity) AS qty_sum
+            FROM OrderDetails
+            WHERE OrderID = NEW.OrderID
+            GROUP BY VariantID
+        ) odsum ON pv.VariantID = odsum.VariantID
+        SET pv.Stock = pv.Stock + odsum.qty_sum;
+    END IF;
+END $$
+DELIMITER ;
+
+-- review_auto_date
+DROP TRIGGER IF EXISTS review_auto_date;
+DELIMITER $$
+CREATE TRIGGER review_auto_date
+BEFORE INSERT ON Review
+FOR EACH ROW
+BEGIN
+    IF NEW.ReviewDate IS NULL OR NEW.ReviewDate = '0000-00-00' THEN
+        SET NEW.ReviewDate = CURDATE();
+    END IF;
+END $$
+DELIMITER ;
+
+-- payment_auto_delete
+DROP TRIGGER IF EXISTS payment_auto_date;
+DELIMITER $$
+CREATE TRIGGER payment_auto_date
+BEFORE INSERT ON Payment
+FOR EACH ROW
+BEGIN
+    IF NEW.PaymentDate IS NULL OR NEW.PaymentDate = '0000-00-00' THEN
+        SET NEW.PaymentDate = CURDATE();
+    END IF;
+END $$
+DELIMITER ;
+
+-- viewhistory_auto_time
+DROP TRIGGER IF EXISTS viewhistory_auto_time;
+DELIMITER $$
+CREATE TRIGGER viewhistory_auto_time
+BEFORE INSERT ON ProductViewHistory
+FOR EACH ROW
+BEGIN
+    IF NEW.ViewTimestamp IS NULL THEN
+        SET NEW.ViewTimestamp = CURRENT_TIMESTAMP();
+    END IF;
+END $$
+DELIMITER ;
+
+-- functions
+
+-- create customer
+DROP FUNCTION IF EXISTS create_customer;
+DELIMITER $$
+CREATE FUNCTION create_customer(
+    p_Name VARCHAR(50),
+    p_Email VARCHAR(50),
+    p_Phone VARCHAR(15),
+    p_Address VARCHAR(200),
+    p_City VARCHAR(50),
+    p_PinCode VARCHAR(10),
+    p_Password VARCHAR(200)
+)
+RETURNS INT
+DETERMINISTIC
+BEGIN
+    DECLARE existing_count INT DEFAULT 0;
+
+    SELECT COUNT(*) INTO existing_count
+    FROM Customer
+    WHERE Email = p_Email OR Phone = p_Phone;
+
+    IF existing_count > 0 THEN
+        RETURN 0;
+    ELSE
+        INSERT INTO Customer (Name, Email, Phone, Address, City, PinCode)
+        VALUES (p_Name, p_Email, p_Phone, p_Address, p_City, p_PinCode);
+
+        INSERT INTO Password (CustomerID, Password)
+        VALUES (LAST_INSERT_ID(), p_Password);
+
+        RETURN 1;
+    END IF;
+END $$
+DELIMITER ;
+
+-- validate_login(p_Email, p_Password)
+DROP FUNCTION IF EXISTS validate_login;
+DELIMITER $$
+CREATE FUNCTION validate_login(
+    p_Email VARCHAR(50),
+    p_Password VARCHAR(200)
+)
+RETURNS INT
+DETERMINISTIC
+BEGIN
+    DECLARE valid_count INT DEFAULT 0;
+
+    SELECT COUNT(*)
+    INTO valid_count
+    FROM Customer c
+    JOIN Password p ON c.CustomerID = p.CustomerID
+    WHERE c.Email = p_Email AND p.Password = p_Password;
+
+    IF valid_count > 0 THEN
+        RETURN 1;
+    ELSE
+        RETURN 0;
+    END IF;
+END $$
+DELIMITER ;
+
+-- calculate_order_total
+DROP FUNCTION IF EXISTS calculate_order_total;
+DELIMITER $$
+CREATE FUNCTION calculate_order_total(
+    p_OrderID INT
+)
+RETURNS DECIMAL(10,2)
+DETERMINISTIC
+BEGIN
+    DECLARE total DECIMAL(10,2);
+
+    SELECT IFNULL(SUM(Quantity * Price), 0)
+    INTO total
+    FROM OrderDetails
+    WHERE OrderID = p_OrderID;
+
+    RETURN total;
+END $$
+DELIMITER ;
+
+
+-- update_customer_password
+DROP FUNCTION IF EXISTS update_customer_password;
+DELIMITER $$
+CREATE FUNCTION update_customer_password(
+    p_Email VARCHAR(50),
+    p_OldPassword VARCHAR(200),
+    p_NewPassword VARCHAR(200)
+)
+RETURNS INT
+DETERMINISTIC
+BEGIN
+    DECLARE cust_id INT DEFAULT 0;
+    DECLARE match_count INT DEFAULT 0;
+
+    SELECT c.CustomerID
+    INTO cust_id
+    FROM Customer c
+    JOIN Password p ON c.CustomerID = p.CustomerID
+    WHERE c.Email = p_Email AND p.Password = p_OldPassword;
+
+    IF cust_id IS NULL THEN
+        RETURN 0;
+    ELSE
+        UPDATE Password
+        SET Password = p_NewPassword
+        WHERE CustomerID = cust_id;
+        RETURN 1;
+    END IF;
+END $$
+DELIMITER ;
+
+
+
+
+
+
+
+
+
+
+
+
+
+

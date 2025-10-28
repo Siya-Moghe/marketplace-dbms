@@ -3,7 +3,7 @@ CREATE DATABASE retail_store;
 USE retail_store;
 
 CREATE TABLE Customer (
-    CustomerID INT PRIMARY KEY,
+    CustomerID INT PRIMARY KEY AUTO_INCREMENT,
     Name VARCHAR(50) NOT NULL,
     Email VARCHAR(50) NOT NULL UNIQUE,
     Phone VARCHAR(15) NOT NULL UNIQUE
@@ -716,7 +716,7 @@ CREATE FUNCTION create_customer(
     p_Name VARCHAR(50),
     p_Email VARCHAR(50),
     p_Phone VARCHAR(15),
-    p_Address VARCHAR(200),
+    p_AddressLine1 VARCHAR(200),
     p_City VARCHAR(50),
     p_PinCode VARCHAR(10),
     p_Password VARCHAR(200)
@@ -725,6 +725,7 @@ RETURNS INT
 DETERMINISTIC
 BEGIN
     DECLARE existing_count INT DEFAULT 0;
+    DECLARE new_id INT;
 
     SELECT COUNT(*) INTO existing_count
     FROM Customer
@@ -733,16 +734,21 @@ BEGIN
     IF existing_count > 0 THEN
         RETURN 0;
     ELSE
-        INSERT INTO Customer (Name, Email, Phone, Address, City, PinCode)
-        VALUES (p_Name, p_Email, p_Phone, p_Address, p_City, p_PinCode);
+        INSERT INTO Customer (Name, Email, Phone)
+        VALUES (p_Name, p_Email, p_Phone);
+        SET new_id = LAST_INSERT_ID();
 
         INSERT INTO Password (CustomerID, Password)
-        VALUES (LAST_INSERT_ID(), p_Password);
+        VALUES (new_id, p_Password);
+
+        INSERT INTO Address (CustomerID, AddressLine1, City, PinCode, AddressType)
+        VALUES (new_id, p_AddressLine1, p_City, p_PinCode, 'Home');
 
         RETURN 1;
     END IF;
 END $$
 DELIMITER ;
+
 
 -- validate_login(p_Email, p_Password)
 DROP FUNCTION IF EXISTS validate_login;

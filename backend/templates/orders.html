@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}My Orders{% endblock %}
+{% block content %}
+<h2>My Orders</h2>
+
+{% if orders %}
+  <div class="list-group mt-3">
+    {% for o in orders %}
+      <div class="list-group-item">
+        <div class="d-flex justify-content-between">
+          <div><strong>Order #{{ o.OrderID }}</strong><br><small>{{ o.OrderDate }}</small></div>
+          <div class="text-end">
+            <div>Status: <strong>{{ o.Status }}</strong></div>
+            <div>Total: ₹{{ "%.2f"|format(o.TotalAmount|default(0)|float) }}</div>
+          </div>
+        </div>
+        {% if o.Items %}
+          <div class="mt-2"><small>{{ o.Items }}</small></div>
+        {% endif %}
+      </div>
+    {% endfor %}
+  </div>
+{% else %}
+  <div class="alert alert-info mt-3">You have no orders yet.</div>
+{% endif %}
+{% endblock %}

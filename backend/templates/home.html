@@ -1,11 +1,37 @@
 {% extends "base.html" %}
-
-{% block title %}Home - MyShop{% endblock %}
-
+{% block title %}Welcome — MyShop{% endblock %}
 {% block content %}
-<section class="home-hero">
-    <h1>Welcome to MyShop</h1>
-    <p>Your one-stop store for everything you love.</p>
-    <a href="/products" class="btn">Browse Products</a>
-</section>
+<div class="text-center py-5">
+  <h1>Welcome to MyShop</h1>
+  <p class="lead">Sign up or login to start shopping.</p>
+  <div class="mt-3">
+    <a class="btn btn-primary me-2" href="{{ url_for('login_page') }}">Login</a>
+    <a class="btn btn-outline-primary" href="{{ url_for('register_page') }}">Register</a>
+  </div>
+</div>
+
+<div class="mt-4">
+  <h4>Featured</h4>
+  <div class="row">
+    {% for p in featured_products %}
+    <div class="col-md-4">
+      <div class="card mb-3">
+        <div class="card-body">
+          <h5 class="card-title">{{ p.Prod_Name }}</h5>
+          <p class="card-text">{{ p.Description }}</p>
+          {% if p.variants %}
+            <small class="text-muted">Variants:</small>
+            <ul class="mb-0">
+              {% for v in p.variants %}
+                <li>{{ v.Size }}/{{ v.Color }} — ₹{{ "%.2f"|format(v.Price) }} ({{ v.Stock }} in stock)</li>
+              {% endfor %}
+            </ul>
+          {% endif %}
+          <a href="{{ url_for('products_page') }}" class="btn btn-sm btn-outline-primary mt-2">View products</a>
+        </div>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+</div>
 {% endblock %}

@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}Your Cart{% endblock %}
+{% block content %}
+<h2>Your Cart</h2>
+
+{% if cart_items %}
+<table class="table table-striped align-middle mt-3">
+  <thead class="table-dark">
+    <tr>
+      <th>Product</th>
+      <th>Variant</th>
+      <th>Price (₹)</th>
+      <th>Quantity</th>
+      <th>Subtotal (₹)</th>
+      <th>Actions</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for it in cart_items %}
+    <tr>
+      <td>{{ it.ProductName }}</td>
+      <td>{{ it.Size or '' }} {{ it.Color or '' }}</td>
+      <td>₹{{ "%.2f"|format(it.Price) }}</td>
+      <td>
+        <form method="POST" action="{{ url_for('update_cart') }}" class="d-flex gap-2">
+          <input type="hidden" name="variant_id" value="{{ it.VariantID }}">
+          <input type="number" name="quantity" min="0" value="{{ it.Quantity }}" class="form-control form-control-sm" style="width:90px;">
+          <button class="btn btn-sm btn-primary" type="submit">Update</button>
+        </form>
+      </td>
+      <td>₹{{ "%.2f"|format(it.Subtotal) }}</td>
+      <td>
+        <form method="POST" action="{{ url_for('remove_from_cart') }}">
+          <input type="hidden" name="variant_id" value="{{ it.VariantID }}">
+          <button class="btn btn-sm btn-danger" type="submit">Remove</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+<div class="d-flex justify-content-between align-items-center mt-3">
+  <h4>Total: ₹{{ "%.2f"|format(total_price) }}</h4>
+  <a class="btn btn-success" href="{{ url_for('checkout_page') }}">Proceed to Checkout</a>
+</div>
+
+{% else %}
+<div class="alert alert-info mt-3">Your cart is empty. <a href="{{ url_for('products_page') }}">Shop now</a>.</div>
+{% endif %}
+{% endblock %}

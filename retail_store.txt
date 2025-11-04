@@ -1,6 +1,7 @@
-DROP DATABASE IF EXISTS retail_store;
-CREATE DATABASE retail_store;
-USE retail_store;
+DROP DATABASE IF EXISTS Retail_Store;
+CREATE DATABASE Retail_Store;
+USE Retail_Store;
+
 
 CREATE TABLE Customer (
     CustomerID INT PRIMARY KEY AUTO_INCREMENT,
@@ -63,7 +64,7 @@ CREATE TABLE ProductVariant (
 );
 
 CREATE TABLE Orders (
-    OrderID INT PRIMARY KEY,
+    OrderID INT PRIMARY KEY AUTO_INCREMENT,
     CustomerID INT NOT NULL,
     OrderDate DATE NOT NULL,
     Status VARCHAR(50) NOT NULL CHECK (Status IN ('Pending','Processing','Shipped','Delivered','Cancelled')),
@@ -93,7 +94,7 @@ CREATE TABLE OrderDetails (
 );
 
 CREATE TABLE Payment (
-    PaymentID INT PRIMARY KEY,
+    PaymentID INT PRIMARY KEY AUTO_INCREMENT,
     OrderID INT NOT NULL,
     PaymentMode VARCHAR(50) NOT NULL,
     PaymentDate DATE NOT NULL,
@@ -161,12 +162,11 @@ CREATE TABLE ProductViewHistory (
         ON DELETE CASCADE
 );
 
--- INSERTS
 
 INSERT INTO Customer (CustomerID, Name, Email, Phone)
 VALUES
 (1, 'Aarav Mehta', 'aarav.mehta@example.com', '9876543210'),
-(2, 'Riya Sharma', '9123456789', '9123456789'),
+(2, 'Riya Sharma', 'riya.sharma@example.com', '9123456789'),
 (3, 'Kabir Singh', 'kabir.singh@example.com', '9988776655'),
 (4, 'Ananya Rao', 'ananya.rao@example.com', '9811122233'),
 (5, 'Vikram Patel', 'vikram.patel@example.com', '9090909090');
@@ -255,12 +255,6 @@ VALUES
 (104, 2, 1, 899.00),
 (105, 1, 1, 4999.00);
 
-
-
--- (procedures creation)
-
-
---  show_cart(CustomerID)
 DELIMITER $$
 CREATE PROCEDURE show_cart(IN cust_id INT)
 BEGIN
@@ -278,7 +272,6 @@ END $$
 DELIMITER ;
 
 
--- show_order_details(OrderID)
 DELIMITER $$
 CREATE PROCEDURE show_order_details(IN ord_id INT)
 BEGIN
@@ -296,9 +289,6 @@ END $$
 DELIMITER ;
 
 
-
-
--- show_product_catalog(CategoryID, searchKeyword)
 DELIMITER $$
 CREATE PROCEDURE show_product_catalog(
     IN cat_id INT,
@@ -318,7 +308,6 @@ END $$
 DELIMITER ;
 
 
--- show_product_reviews(VariantID)
 DELIMITER $$
 CREATE PROCEDURE show_product_reviews(IN variant_id INT)
 BEGIN
@@ -335,10 +324,6 @@ END $$
 DELIMITER ;
 
 
-
-
-
--- show_recommendations(CustomerID)
 DELIMITER $$
 CREATE PROCEDURE show_recommendations(IN cust_id INT)
 BEGIN
@@ -356,22 +341,13 @@ BEGIN
 END $$
 DELIMITER ;
 
-
-
-
---  sp_add_to_cart
 DELIMITER //
 CREATE PROCEDURE sp_add_to_cart(IN cust_id INT, IN variant_id INT, IN qty INT)
 BEGIN
   DECLARE stock_available INT;
-
-  SELECT Stock INTO stock_available 
-  FROM productvariant 
-  WHERE VariantID = variant_id;
-
+  SELECT Stock INTO stock_available FROM ProductVariant WHERE VariantID = variant_id;
   IF stock_available >= qty THEN
-    INSERT INTO cart(CustomerID, VariantID, Quantity)
-    VALUES (cust_id, variant_id, qty)
+    INSERT INTO Cart(CustomerID, VariantID, Quantity) VALUES (cust_id, variant_id, qty)
     ON DUPLICATE KEY UPDATE Quantity = Quantity + qty;
   ELSE
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Insufficient stock';
@@ -380,7 +356,6 @@ END //
 DELIMITER ;
 
 
--- sp_remove_from_cart
 DELIMITER //
 CREATE PROCEDURE sp_remove_from_cart(IN cust_id INT, IN variant_id INT)
 BEGIN
@@ -388,36 +363,75 @@ BEGIN
 END //
 DELIMITER ;
 
--- sp_place_order
+
+DROP PROCEDURE IF EXISTS sp_place_order;
 DELIMITER //
-CREATE PROCEDURE sp_place_order(IN cust_id INT)
+CREATE PROCEDURE sp_place_order(
+    IN cust_id INT,
+    IN shipping_addr_id INT
+)
 BEGIN
   DECLARE new_order_id INT;
+  DECLARE order_total DECIMAL(10,2);
+  
+  CREATE TEMPORARY TABLE TempCart (
+    VariantID INT,
+    Quantity INT,
+    Price DECIMAL(10,2)
+  );
+  
+  INSERT INTO TempCart (VariantID, Quantity, Price)
+  SELECT c.VariantID, c.Quantity, v.Price
+  FROM Cart c
+  JOIN ProductVariant v ON c.VariantID = v.VariantID
+  WHERE c.CustomerID = cust_id;
+
+  SELECT IFNULL(SUM(Quantity * Price), 0)
+  INTO order_total
+  FROM TempCart;
 
   START TRANSACTION;
-  INSERT INTO Orders(CustomerID, OrderDate, Status) VALUES (cust_id, NOW(), 'Pending');
-  SET new_order_id = LAST_INSERT_ID();
 
-  INSERT INTO OrderDetails(OrderID, VariantID, Quantity, Price)
-  SELECT new_order_id, VariantID, Quantity, Price FROM Cart
-  JOIN ProductVariant USING(VariantID)
-  WHERE CustomerID = cust_id;
+  IF order_total > 0 THEN
+    INSERT INTO Orders(CustomerID, OrderDate, Status, ShippingAddressID, TotalAmount) 
+    VALUES (cust_id, CURDATE(), 'Pending', shipping_addr_id, order_total);
+    
+    SET new_order_id = LAST_INSERT_ID();
 
-  DELETE FROM Cart WHERE CustomerID = cust_id;
-  COMMIT;
+    INSERT INTO OrderDetails(OrderID, VariantID, Quantity, Price)
+    SELECT new_order_id, VariantID, Quantity, Price 
+    FROM TempCart;
+
+    DELETE FROM Cart WHERE CustomerID = cust_id;
+    
+    COMMIT;
+    
+    SELECT new_order_id AS NewOrderID;
+  ELSE
+    ROLLBACK;
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Cannot place an empty order';
+  END IF;
+  
+  DROP TEMPORARY TABLE IF EXISTS TempCart;
+  
 END //
 DELIMITER ;
 
--- sp_make_payment
+
+DROP PROCEDURE IF EXISTS sp_make_payment;
 DELIMITER //
-CREATE PROCEDURE sp_make_payment(IN order_id INT, IN method VARCHAR(50), IN amt DECIMAL(10,2))
+CREATE PROCEDURE sp_make_payment(
+    IN order_id INT, 
+    IN p_method VARCHAR(50), 
+    IN amt DECIMAL(10,2)
+)
 BEGIN
-  INSERT INTO Payment(OrderID, PaymentDate, Amount, Method, Status)
-  VALUES(order_id, NOW(), amt, method, 'Success');
+  INSERT INTO Payment(OrderID, PaymentDate, Amount, PaymentMode, Status)
+  VALUES(order_id, CURDATE(), amt, p_method, 'Success');
 END //
 DELIMITER ;
 
--- sp_add_review
+
 DELIMITER //
 CREATE PROCEDURE sp_add_review(IN cust_id INT, IN variant_id INT, IN rating INT, IN comment TEXT)
 BEGIN
@@ -436,7 +450,7 @@ BEGIN
 END //
 DELIMITER ;
 
--- sp_update_stock
+
 DELIMITER //
 CREATE PROCEDURE sp_update_stock(IN variant_id INT, IN new_stock INT)
 BEGIN
@@ -444,7 +458,7 @@ BEGIN
 END //
 DELIMITER ;
 
--- show_order_history
+
 DROP PROCEDURE IF EXISTS show_order_history;
 DELIMITER $$
 CREATE PROCEDURE show_order_history(IN p_CustomerID INT)
@@ -469,7 +483,6 @@ END $$
 DELIMITER ;
 
 
--- show_trending_products
 DROP PROCEDURE IF EXISTS show_trending_products;
 DELIMITER $$
 CREATE PROCEDURE show_trending_products(IN p_limit INT)
@@ -503,7 +516,7 @@ BEGIN
 END $$
 DELIMITER ;
 
-–  cancel_order
+
 DROP PROCEDURE IF EXISTS cancel_order;
 DELIMITER $$
 CREATE PROCEDURE cancel_order(IN p_OrderID INT)
@@ -516,12 +529,11 @@ BEGIN
         SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Cannot cancel shipped/delivered order';
     ELSE
         UPDATE Orders SET Status = 'Cancelled' WHERE OrderID = p_OrderID;
-        -- update_stock_on_cancel trigger will restore stock (if you implemented it)
     END IF;
 END $$
 DELIMITER ;
 
--- add_to_wishlist
+
 DROP PROCEDURE IF EXISTS add_to_wishlist;
 DELIMITER $$
 CREATE PROCEDURE add_to_wishlist(IN p_CustomerID INT, IN p_VariantID INT)
@@ -532,7 +544,7 @@ BEGIN
 END $$
 DELIMITER ;
 
--- remove_from_wishlist
+
 DROP PROCEDURE IF EXISTS remove_from_wishlist;
 DELIMITER $$
 CREATE PROCEDURE remove_from_wishlist(IN p_CustomerID INT, IN p_VariantID INT)
@@ -541,7 +553,7 @@ BEGIN
 END $$
 DELIMITER ;
 
---  process_refund
+
 DROP PROCEDURE IF EXISTS process_refund;
 DELIMITER $$
 CREATE PROCEDURE process_refund(IN p_PaymentID INT)
@@ -562,7 +574,6 @@ BEGIN
         UPDATE Payment SET Status = 'Refunded' WHERE PaymentID = p_PaymentID;
         UPDATE Orders SET Status = 'Refunded' WHERE OrderID = v_OrderID;
 
-        -- restore stock for each orderdetail
         UPDATE ProductVariant pv
         JOIN (
             SELECT od.VariantID, SUM(od.Quantity) AS qty_sum
@@ -576,10 +587,6 @@ END $$
 DELIMITER ;
 
 
-
--- (triggers creation)
-
--- reduce_stock_on_order
 DELIMITER //
 CREATE TRIGGER reduce_stock_on_order
 AFTER INSERT ON OrderDetails
@@ -591,10 +598,11 @@ BEGIN
 END //
 DELIMITER ;
 
--- update_order_status_on_payment
+
+DROP TRIGGER IF EXISTS update_order_status_on_payment;
 DELIMITER //
 CREATE TRIGGER update_order_status_on_payment
-AFTER UPDATE ON Payment
+AFTER INSERT ON Payment
 FOR EACH ROW
 BEGIN
   IF NEW.Status = 'Success' THEN
@@ -603,7 +611,7 @@ BEGIN
 END //
 DELIMITER ;
 
--- prevent_review_without_purchase
+
 DELIMITER //
 CREATE TRIGGER prevent_review_without_purchase
 BEFORE INSERT ON Review
@@ -619,7 +627,7 @@ BEGIN
 END //
 DELIMITER ;
 
--- cart_cleanup_zero_stock
+
 DELIMITER //
 CREATE TRIGGER cart_cleanup_zero_stock
 BEFORE INSERT ON Cart
@@ -633,7 +641,7 @@ BEGIN
 END //
 DELIMITER ;
 
--- delete_orders_on_customer_delete
+
 DELIMITER //
 CREATE TRIGGER delete_orders_on_customer_delete
 AFTER DELETE ON Customer
@@ -647,7 +655,6 @@ END //
 DELIMITER ;
 
 
--- update_stock_on_cancel
 DROP TRIGGER IF EXISTS update_stock_on_cancel;
 DELIMITER $$
 CREATE TRIGGER update_stock_on_cancel
@@ -655,7 +662,6 @@ AFTER UPDATE ON Orders
 FOR EACH ROW
 BEGIN
     IF OLD.Status <> 'Cancelled' AND NEW.Status = 'Cancelled' THEN
-        -- restore stock for all items in that order
         UPDATE ProductVariant pv
         JOIN (
             SELECT VariantID, SUM(Quantity) AS qty_sum
@@ -668,7 +674,7 @@ BEGIN
 END $$
 DELIMITER ;
 
--- review_auto_date
+
 DROP TRIGGER IF EXISTS review_auto_date;
 DELIMITER $$
 CREATE TRIGGER review_auto_date
@@ -681,7 +687,7 @@ BEGIN
 END $$
 DELIMITER ;
 
--- payment_auto_delete
+
 DROP TRIGGER IF EXISTS payment_auto_date;
 DELIMITER $$
 CREATE TRIGGER payment_auto_date
@@ -694,7 +700,7 @@ BEGIN
 END $$
 DELIMITER ;
 
--- viewhistory_auto_time
+
 DROP TRIGGER IF EXISTS viewhistory_auto_time;
 DELIMITER $$
 CREATE TRIGGER viewhistory_auto_time
@@ -707,16 +713,14 @@ BEGIN
 END $$
 DELIMITER ;
 
--- functions
 
--- create customer
 DROP FUNCTION IF EXISTS create_customer;
 DELIMITER $$
 CREATE FUNCTION create_customer(
     p_Name VARCHAR(50),
     p_Email VARCHAR(50),
     p_Phone VARCHAR(15),
-    p_AddressLine1 VARCHAR(200),
+    p_Address VARCHAR(200),
     p_City VARCHAR(50),
     p_PinCode VARCHAR(10),
     p_Password VARCHAR(200)
@@ -725,7 +729,7 @@ RETURNS INT
 DETERMINISTIC
 BEGIN
     DECLARE existing_count INT DEFAULT 0;
-    DECLARE new_id INT;
+    DECLARE new_cust_id INT;
 
     SELECT COUNT(*) INTO existing_count
     FROM Customer
@@ -736,21 +740,21 @@ BEGIN
     ELSE
         INSERT INTO Customer (Name, Email, Phone)
         VALUES (p_Name, p_Email, p_Phone);
-        SET new_id = LAST_INSERT_ID();
+        
+        SET new_cust_id = LAST_INSERT_ID();
 
         INSERT INTO Password (CustomerID, Password)
-        VALUES (new_id, p_Password);
-
+        VALUES (new_cust_id, p_Password);
+        
         INSERT INTO Address (CustomerID, AddressLine1, City, PinCode, AddressType)
-        VALUES (new_id, p_AddressLine1, p_City, p_PinCode, 'Home');
+        VALUES (new_cust_id, p_Address, p_City, p_PinCode, 'Home');
 
-        RETURN 1;
+        RETURN new_cust_id;
     END IF;
 END $$
 DELIMITER ;
 
 
--- validate_login(p_Email, p_Password)
 DROP FUNCTION IF EXISTS validate_login;
 DELIMITER $$
 CREATE FUNCTION validate_login(
@@ -761,22 +765,23 @@ RETURNS INT
 DETERMINISTIC
 BEGIN
     DECLARE valid_count INT DEFAULT 0;
+    DECLARE cust_id INT DEFAULT 0;
 
-    SELECT COUNT(*)
-    INTO valid_count
+    SELECT c.CustomerID
+    INTO cust_id
     FROM Customer c
     JOIN Password p ON c.CustomerID = p.CustomerID
     WHERE c.Email = p_Email AND p.Password = p_Password;
 
-    IF valid_count > 0 THEN
-        RETURN 1;
+    IF cust_id > 0 THEN
+        RETURN cust_id;
     ELSE
         RETURN 0;
     END IF;
 END $$
 DELIMITER ;
 
--- calculate_order_total
+
 DROP FUNCTION IF EXISTS calculate_order_total;
 DELIMITER $$
 CREATE FUNCTION calculate_order_total(
@@ -797,7 +802,6 @@ END $$
 DELIMITER ;
 
 
--- update_customer_password
 DROP FUNCTION IF EXISTS update_customer_password;
 DELIMITER $$
 CREATE FUNCTION update_customer_password(
@@ -817,7 +821,7 @@ BEGIN
     JOIN Password p ON c.CustomerID = p.CustomerID
     WHERE c.Email = p_Email AND p.Password = p_OldPassword;
 
-    IF cust_id IS NULL THEN
+    IF cust_id IS NULL OR cust_id = 0 THEN
         RETURN 0;
     ELSE
         UPDATE Password
@@ -827,17 +831,4 @@ BEGIN
     END IF;
 END $$
 DELIMITER ;
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+DROP TRIGGER IF EXISTS payment_auto_date;

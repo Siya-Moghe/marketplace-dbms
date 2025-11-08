@@ -89,7 +89,7 @@ def products_page():
     try:
         conn = get_db_connection()
         cur = conn.cursor(dictionary=True)
-        cur.execute("SELECT * FROM Product ORDER BY Prod_Name")
+        cur.execute("SELECT ProductID, Prod_Name, Description, CategoryID, ImageURL FROM Product ORDER BY Prod_Name")
         products = cur.fetchall() or []
         cur.execute("SELECT * FROM ProductVariant")
         variants = cur.fetchall() or []
@@ -418,10 +418,6 @@ def checkout_page():
     )
 
 
-
-
-
-
 # ---------------- Pay (simulate) ----------------
 @app.route("/pay/<order_id>", methods=["GET", "POST"])
 def pay_page(order_id):
@@ -462,6 +458,79 @@ def pay_page(order_id):
 
     return render_template("pay.html", order_details=order_details, amount=round(amount, 2), order_id=order_id)
 
+#-------------Order Deatils ---------
+@app.route("/orders/<int:order_id>")
+def order_details_page(order_id):
+    if not session.get("user"):
+        flash("Please login to view order details", "warning")
+        return redirect(url_for("login_page"))
+
+    cust_id = session["user"]["CustomerID"]
+    order_details = []
+    amount = 0.0
+
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor(dictionary=True)
+        
+        # Fetch Order details, including ImageURL, directly from DB
+        cur.execute("""
+            SELECT 
+                od.OrderID, od.Quantity, 
+                od.Price AS ItemPrice, 
+                p.Prod_Name AS ProductName, 
+                p.ImageURL,
+                v.Size, v.Color
+            FROM OrderDetails od
+            JOIN ProductVariant v ON od.VariantID = v.VariantID
+            JOIN Product p ON v.ProductID = p.ProductID
+            JOIN Orders co ON od.OrderID = co.OrderID
+            WHERE od.OrderID = %s AND co.CustomerID = %s
+        """, (order_id, cust_id)) # IMPORTANT: Verify the customer owns the order
+
+        rows = cur.fetchall() or []
+        
+        if not rows:
+            # Check if order exists (for helpful error messages)
+            cur.execute("SELECT 1 FROM Orders WHERE OrderID = %s", (order_id,))
+            if not cur.fetchone():
+                    flash("Order not found or does not belong to your account.", "danger")
+                    return redirect(url_for("my_orders_redirect"))
+            # If rows is empty but order exists, the order might be empty or have an issue
+            flash("Order details could not be loaded.", "warning")
+
+        # Process details
+        for r in rows:
+            price = float(r.get("ItemPrice", 0))
+            qty = int(r.get("Quantity", 0))
+            subtotal = price * qty
+            order_details.append({
+                "ProductName": r["ProductName"],
+                "ImageURL": r["ImageURL"], # <-- New field
+                "Size": r.get("Size"),
+                "Color": r.get("Color"),
+                "Price": price,
+                "Quantity": qty,
+                "Subtotal": subtotal
+            })
+            amount += subtotal
+
+    except Exception as e:
+        flash(f"Error fetching order details: {e}", "danger")
+        order_details = []
+
+    finally:
+        try:
+            cur.close(); conn.close()
+        except:
+            pass
+
+    return render_template(
+        "order_details.html", 
+        order_details=order_details, 
+        amount=round(amount, 2), 
+        order_id=order_id
+    )
 
 # ---------------- Orders ----------------
 @app.route("/orders")
@@ -472,18 +541,28 @@ def my_orders_redirect():
     uid = session["user"]["CustomerID"]
     return redirect(url_for("orders_history", user_id=uid))
 
-
 @app.route("/orders/history/<int:user_id>")
 def orders_history(user_id):
     try:
         resp = requests.get(f"{BASE_API_URL}/orders/history/{user_id}", timeout=8)
         j = resp.json() if resp.content else {}
         orders = j.get("data", []) if j.get("success", True) else []
+        
+        for order in orders:
+            if 'TotalAmount' in order and order['TotalAmount'] is not None:
+                try:
+                    # Ensures Jinja receives a float type
+                    order['TotalAmount'] = float(order['TotalAmount'])
+                except (TypeError, ValueError):
+                    # Safety fallback
+                    order['TotalAmount'] = 0.0
+            else:
+                order['TotalAmount'] = 0.0
+                
     except Exception as e:
         flash(f"Error fetching orders: {e}", "danger")
         orders = []
     return render_template("orders.html", orders=orders)
-
 
 # ---------------- Auth ----------------
 @app.route("/auth/login", methods=["GET", "POST"])

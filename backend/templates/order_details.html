@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block title %}Order #{{ order_id }}{% endblock %}
+{% block content %}
+
+<h2>Order Details (#{{ order_id }})</h2>
+
+{% if order_details %}
+<table class="table table-striped align-middle">
+    <thead>
+        <tr>
+            <th>Product</th>
+            <th class="text-center">Image</th>
+            <th>Variant</th>
+            <th class="text-end">Price</th>
+            <th class="text-end">Quantity</th>
+            <th class="text-end">Subtotal</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for item in order_details %}
+        <tr>
+            <td>
+                {{ item.ProductName }} 
+            </td>
+            <td class="text-center">
+                <img src="{{ url_for('static', filename='imgs/' + item.ImageURL) }}" 
+                     alt="{{ item.ProductName }}" 
+                     style="height: 50px; width: 50px; object-fit: contain;">
+            </td>
+            <td>
+                {% if item.Size or item.Color %}{{ item.Size }}/{{ item.Color }}{% endif %}
+            </td>
+            <td class="text-end">₹{{ "%.2f"|format(item.Price) }}</td>
+            <td class="text-end">{{ item.Quantity }}</td>
+            <td class="text-end">₹{{ "%.2f"|format(item.Price * item.Quantity) }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+    <tfoot>
+        <tr>
+            <th colspan="5" class="text-end">Order Total:</th>
+            <th class="text-end">₹{{ "%.2f"|format(amount) }}</th>
+        </tr>
+    </tfoot>
+</table>
+{% else %}
+<p>Could not load details for this order, or the order is empty.</p>
+{% endif %}
+
+<a href="{{ url_for('my_orders_redirect') }}" class="btn btn-secondary mt-3">Back to Orders History</a>
+
+{% endblock %}

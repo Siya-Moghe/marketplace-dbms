@@ -1,26 +1,48 @@
 {% extends "base.html" %}
-{% block title %}My Orders{% endblock %}
+{% block title %}Order History{% endblock %}
+
 {% block content %}
-<h2>My Orders</h2>
+<h2>Your Orders</h2>
 
 {% if orders %}
-  <div class="list-group mt-3">
-    {% for o in orders %}
-      <div class="list-group-item">
-        <div class="d-flex justify-content-between">
-          <div><strong>Order #{{ o.OrderID }}</strong><br><small>{{ o.OrderDate }}</small></div>
-          <div class="text-end">
-            <div>Status: <strong>{{ o.Status }}</strong></div>
-            <div>Total: ₹{{ "%.2f"|format(o.TotalAmount|default(0)|float) }}</div>
-          </div>
-        </div>
-        {% if o.Items %}
-          <div class="mt-2"><small>{{ o.Items }}</small></div>
-        {% endif %}
-      </div>
-    {% endfor %}
-  </div>
+<table class="table table-striped">
+    <thead>
+        <tr>
+            <th>Order ID</th>
+            <th>Date</th>
+            <th>Amount</th>
+            <th>Status</th>
+            <th>Actions</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for order in orders %} 
+        
+        <tr>
+            <td>{{ order.OrderID }}</td>
+            <td>{{ order.OrderDate }}</td>
+            <td>{{ order.TotalAmount | round(2) }}</td>
+            <td><span class="badge bg-secondary">{{ order.OrderStatus }}</span></td>
+            <td>
+                <a href="{{ url_for('order_details_page', order_id=order.OrderID) }}" class="btn btn-info btn-sm">Details</a>
+                
+                {% if order.OrderStatus == 'Pending' or order.OrderStatus == 'Payment Failed' %}
+                <form method="POST" action="{{ url_for('delete_order_front', order_id=order.OrderID) }}" class="d-inline">
+                    <button type="submit" class="btn btn-danger btn-sm" 
+                            onclick="return confirm('WARNING: Are you sure you want to PERMANENTLY DELETE Order #{{ order.OrderID }}?');">
+                        Delete 🗑️
+                    </button>
+                </form>
+                {% endif %}
+            </td>
+        </tr>
+        
+        {% endfor %} 
+        
+    </tbody>
+</table>
+
 {% else %}
-  <div class="alert alert-info mt-3">You have no orders yet.</div>
+<p>You have no orders yet.</p>
 {% endif %}
 {% endblock %}

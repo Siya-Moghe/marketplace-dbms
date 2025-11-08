@@ -1,0 +1,1986 @@
+
+--- app.py ---
+# backend/app.py
+import requests
+from flask import (
+    Flask, render_template, request, redirect, url_for, session, flash
+)
+from flask_cors import CORS
+from db import get_db_connection
+
+# import your existing backend API blueprints (unchanged)
+from routes.products import products_bp
+from routes.cart import cart_bp
+from routes.auth import auth_bp
+from routes.customers import customers_bp
+from routes.orders import orders_bp
+from routes.payments import payments_bp
+
+app = Flask(__name__)
+app.secret_key = "supersecretkey"
+CORS(app)
+
+# register API blueprints under /api (these are your existing routes)
+app.register_blueprint(products_bp, url_prefix="/api")
+app.register_blueprint(cart_bp, url_prefix="/api")
+app.register_blueprint(auth_bp, url_prefix="/api")
+app.register_blueprint(customers_bp, url_prefix="/api")
+app.register_blueprint(orders_bp, url_prefix="/api")
+app.register_blueprint(payments_bp, url_prefix="/api")
+
+BASE_API_URL = "http://127.0.0.1:5000/api"  # same server
+
+@app.context_processor
+def inject_current_year():
+    from datetime import datetime
+    return {"current_year": datetime.now().year}
+
+
+# ---------------- Landing (welcome) ----------------
+@app.route("/")
+def home():
+    # simple landing page: if logged in -> go to products
+    if session.get("user"):
+        return redirect(url_for("products_page"))
+
+    # show a few featured products (read directly from DB for reliable variant info)
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor(dictionary=True)
+        cur.execute("""
+            SELECT p.ProductID, p.Prod_Name, p.Description, v.VariantID, v.Size, v.Color, v.Price, v.Stock
+            FROM Product p
+            JOIN ProductVariant v ON p.ProductID = v.ProductID
+            ORDER BY p.Prod_Name
+            LIMIT 3
+        """)
+        rows = cur.fetchall() or []
+        featured = {}
+        for r in rows:
+            pid = r["ProductID"]
+            if pid not in featured:
+                featured[pid] = {
+                    "ProductID": pid,
+                    "Prod_Name": r["Prod_Name"],
+                    "Description": r["Description"],
+                    "variants": []
+                }
+            featured[pid]["variants"].append({
+                "VariantID": r["VariantID"],
+                "Size": r["Size"],
+                "Color": r["Color"],
+                "Price": float(r["Price"]),
+                "Stock": int(r["Stock"])
+            })
+        featured_products = list(featured.values())
+    except Exception as e:
+        featured_products = []
+        flash(f"Error loading featured products: {e}", "danger")
+    finally:
+        try:
+            cur.close(); conn.close()
+        except:
+            pass
+
+    return render_template("home.html", featured_products=featured_products)
+
+
+# ---------------- Products ----------------
+@app.route("/products")
+def products_page():
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor(dictionary=True)
+        cur.execute("SELECT ProductID, Prod_Name, Description, CategoryID, ImageURL FROM Product ORDER BY Prod_Name")
+        products = cur.fetchall() or []
+        cur.execute("SELECT * FROM ProductVariant")
+        variants = cur.fetchall() or []
+        # attach variants to products (guaranteed VariantID present)
+        for p in products:
+            p["variants"] = [v for v in variants if v["ProductID"] == p["ProductID"]]
+            for v in p["variants"]:
+                v["Price"] = float(v["Price"])
+                v["Stock"] = int(v["Stock"])
+    except Exception as e:
+        products = []
+        flash(f"Error loading products: {e}", "danger")
+    finally:
+        try:
+            cur.close(); conn.close()
+        except:
+            pass
+
+    return render_template("products.html", products=products)
+
+
+# ---------------- Add to cart (frontend form) ----------------
+@app.route("/add-to-cart", methods=["POST"])
+def add_to_cart_front():
+    if not session.get("user"):
+        flash("Please login to add items to cart", "warning")
+        return redirect(url_for("login_page"))
+
+    cust_id = session["user"].get("CustomerID")
+    variant_id = request.form.get("variant_id")
+    quantity_raw = request.form.get("quantity", "1")
+
+    try:
+        quantity = int(quantity_raw)
+        if quantity < 1:
+            raise ValueError()
+    except Exception:
+        flash("Quantity must be a positive integer", "danger")
+        return redirect(request.referrer or url_for("products_page"))
+
+    if not variant_id:
+        flash("No variant specified", "danger")
+        return redirect(request.referrer or url_for("products_page"))
+
+    # quick stock check (DB) to provide helpful message before calling API
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor(dictionary=True)
+        cur.execute("SELECT Stock FROM ProductVariant WHERE VariantID = %s", (variant_id,))
+        r = cur.fetchone()
+        if not r:
+            flash("Invalid product variant", "danger")
+            return redirect(request.referrer or url_for("products_page"))
+        if int(r["Stock"]) < quantity:
+            flash("Insufficient stock for selected quantity", "danger")
+            return redirect(request.referrer or url_for("products_page"))
+    except Exception as e:
+        flash(f"Error checking stock: {e}", "danger")
+        return redirect(request.referrer or url_for("products_page"))
+    finally:
+        try:
+            cur.close(); conn.close()
+        except:
+            pass
+
+    # call API to add to cart (stored proc handles duplicate/atomic increments)
+    try:
+        payload = {"customer_id": int(cust_id), "variant_id": int(variant_id), "quantity": int(quantity)}
+        resp = requests.post(f"{BASE_API_URL}/cart/add", json=payload, timeout=8)
+        j = resp.json() if resp.content else {}
+        if resp.status_code == 200 and j.get("success"):
+            flash("Added to cart", "success")
+        else:
+            flash(j.get("error") or j.get("message") or "Could not add to cart", "danger")
+    except Exception as e:
+        flash(f"Error adding to cart: {e}", "danger")
+
+    return redirect(request.referrer or url_for("products_page"))
+
+
+# ---------------- Cart view (reads DB so VariantID is present) ----------------
+@app.route("/cart")
+def cart_page():
+    if not session.get("user"):
+        flash("Please login to view cart", "warning")
+        return redirect(url_for("login_page"))
+
+    cust_id = session["user"]["CustomerID"]
+    items = []
+    total = 0.0
+
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor(dictionary=True)
+        cur.execute("""
+            SELECT c.VariantID, p.Prod_Name AS ProductName, v.Size, v.Color, c.Quantity, v.Price
+            FROM Cart c
+            JOIN ProductVariant v ON c.VariantID = v.VariantID
+            JOIN Product p ON v.ProductID = p.ProductID
+            WHERE c.CustomerID = %s
+        """, (cust_id,))
+        rows = cur.fetchall() or []
+        for r in rows:
+            price = float(r.get("Price") or 0)
+            qty = int(r.get("Quantity") or 1)
+            subtotal = price * qty
+            items.append({
+                "VariantID": r["VariantID"],
+                "ProductName": r["ProductName"],
+                "Size": r.get("Size"),
+                "Color": r.get("Color"),
+                "Price": price,
+                "Quantity": qty,
+                "Subtotal": subtotal
+            })
+            total += subtotal
+    except Exception as e:
+        flash(f"Error loading cart: {e}", "danger")
+        items = []
+    finally:
+        try:
+            cur.close(); conn.close()
+        except:
+            pass
+
+    return render_template("cart.html", cart_items=items, total_price=round(total, 2))
+
+
+# ---------------- Update cart item ----------------
+@app.route("/cart/update", methods=["POST"])
+def update_cart():
+    if not session.get("user"):
+        flash("Please login to update cart", "warning")
+        return redirect(url_for("login_page"))
+
+    cust_id = session["user"]["CustomerID"]
+    variant_id = request.form.get("variant_id")
+    qty_raw = request.form.get("quantity")
+
+    if not variant_id or qty_raw is None:
+        flash("Invalid request (missing variant or quantity)", "danger")
+        return redirect(url_for("cart_page"))
+
+    try:
+        quantity = int(qty_raw)
+        if quantity < 0:
+            raise ValueError()
+    except Exception:
+        flash("Quantity must be a non-negative integer", "danger")
+        return redirect(url_for("cart_page"))
+
+    # If quantity == 0 -> remove, else call update API
+    try:
+        if quantity == 0:
+            payload = {"customer_id": int(cust_id), "variant_id": int(variant_id)}
+            resp = requests.delete(f"{BASE_API_URL}/cart/remove", json=payload, timeout=8)
+        else:
+            payload = {"customer_id": int(cust_id), "variant_id": int(variant_id), "quantity": int(quantity)}
+            resp = requests.put(f"{BASE_API_URL}/cart/update", json=payload, timeout=8)
+
+        j = resp.json() if resp.content else {}
+        if resp.status_code in (200, 201) and j.get("success"):
+            flash("Cart updated", "success")
+        else:
+            flash(j.get("error") or j.get("message") or "Failed to update cart", "danger")
+    except Exception as e:
+        flash(f"Error updating cart: {e}", "danger")
+
+    return redirect(url_for("cart_page"))
+
+
+# ---------------- Remove from cart ----------------
+@app.route("/cart/remove", methods=["POST"])
+def remove_from_cart():
+    if not session.get("user"):
+        flash("Please login to update cart", "warning")
+        return redirect(url_for("login_page"))
+
+    cust_id = session["user"]["CustomerID"]
+    variant_id = request.form.get("variant_id")
+
+    if not variant_id:
+        flash("Invalid request (missing variant ID)", "danger")
+        return redirect(url_for("cart_page"))
+
+    try:
+        payload = {"customer_id": int(cust_id), "variant_id": int(variant_id)}
+        resp = requests.delete(f"{BASE_API_URL}/cart/remove", json=payload, timeout=8)
+        j = resp.json() if resp.content else {}
+        if resp.status_code == 200 and j.get("success"):
+            flash("Item removed from cart", "info")
+        else:
+            flash(j.get("error") or j.get("message") or "Failed to remove item", "danger")
+    except Exception as e:
+        flash(f"Error removing item: {e}", "danger")
+
+    return redirect(url_for("cart_page"))
+
+
+
+# ---------------- Checkout ----------------
+@app.route("/checkout", methods=["GET", "POST"])
+def checkout_page():
+    if not session.get("user"):
+        flash("Please login to checkout", "warning")
+        return redirect(url_for("login_page"))
+
+    cust_id = session["user"]["CustomerID"]
+
+    # Fetch cart items and addresses safely
+    cart_items, total, addresses = [], 0.0, []
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor(dictionary=True)
+
+        # Fetch cart items
+        cur.execute("""
+            SELECT c.VariantID, p.Prod_Name AS ProductName, v.Size, v.Color, c.Quantity, v.Price
+            FROM Cart c
+            JOIN ProductVariant v ON c.VariantID = v.VariantID
+            JOIN Product p ON v.ProductID = p.ProductID
+            WHERE c.CustomerID = %s
+        """, (cust_id,))
+        rows = cur.fetchall() or []
+        for r in rows:
+            price = float(r.get("Price", 0) or 0)
+            qty = int(r.get("Quantity", 1) or 1)
+            subtotal = price * qty
+            total += subtotal
+            cart_items.append({
+                "VariantID": r["VariantID"],
+                "ProductName": r["ProductName"],
+                "Size": r.get("Size"),
+                "Color": r.get("Color"),
+                "Price": price,
+                "Quantity": qty,
+                "Subtotal": subtotal
+            })
+
+        # Fetch addresses
+        resp = requests.get(f"{BASE_API_URL}/customers/{cust_id}/addresses", timeout=6)
+        j = resp.json() if resp.content else {}
+        addresses = j.get("data", []) if j.get("success", True) else []
+    except Exception as e:
+        flash(f"Error loading checkout data: {e}", "danger")
+    finally:
+        try:
+            cur.close(); conn.close()
+        except:
+            pass
+
+    # ---- POST request handling ----
+    if request.method == "POST":
+        # Case 1: Add address
+        if "add_address" in request.form:
+            addr_line = request.form.get("address_line_1", "").strip()
+            city = request.form.get("city", "").strip()
+            pincode = request.form.get("pincode", "").strip()
+            addr_type = request.form.get("type", "Home")
+
+            if not all([addr_line, city, pincode]):
+                flash("Please fill all address fields", "warning")
+                return redirect(url_for("checkout_page"))
+
+            try:
+                payload = {
+                    "customer_id": int(cust_id),
+                    "address_line_1": addr_line,
+                    "city": city,
+                    "pincode": pincode,
+                    "type": addr_type
+                }
+                resp = requests.post(f"{BASE_API_URL}/customers/addresses/add", json=payload, timeout=8)
+                jr = resp.json() if resp.content else {}
+                if resp.status_code in (200, 201) and jr.get("success"):
+                    flash("Address added successfully", "success")
+                else:
+                    flash(jr.get("error") or jr.get("message") or "Failed to add address", "danger")
+            except Exception as e:
+                flash(f"Error adding address: {e}", "danger")
+
+            return redirect(url_for("checkout_page"))
+
+        # Case 2: Place order
+        shipping_address_id = request.form.get("shipping_address_id")
+        if not shipping_address_id:
+            flash("Please select a shipping address", "warning")
+            return redirect(url_for("checkout_page"))
+
+        try:
+            payload = {
+                "customer_id": int(cust_id),
+                "shipping_address_id": int(shipping_address_id)
+            }
+            resp_ord = requests.post(f"{BASE_API_URL}/orders/place", json=payload, timeout=12)
+            j_ord = resp_ord.json() if resp_ord.content else {}
+
+            if resp_ord.status_code in (200, 201) and j_ord.get("success"):
+                data = j_ord.get("data")
+                order_id = None
+                # Try extracting order ID cleanly
+                if isinstance(data, dict):
+                    order_id = data.get("OrderID") or data.get("NewOrderID")
+                elif isinstance(data, list) and data:
+                    first = data[0]
+                    order_id = first.get("OrderID") if isinstance(first, dict) else first
+                if not order_id:
+                    order_id = 0
+
+                flash("Order placed successfully. Proceed to payment.", "success")
+                return redirect(url_for("pay_page", order_id=order_id))
+            else:
+                flash(j_ord.get("error") or j_ord.get("message") or "Could not place order", "danger")
+
+        except Exception as e:
+            flash(f"Error placing order: {e}", "danger")
+
+        return redirect(url_for("checkout_page"))
+
+    # ---- Render page ----
+    return render_template(
+        "checkout.html",
+        cart_items=cart_items,
+        total=round(total, 2),
+        addresses=addresses
+    )
+
+
+
+
+
+
+# ---------------- Pay (simulate) ----------------
+@app.route("/pay/<order_id>", methods=["GET", "POST"])
+def pay_page(order_id):
+    if not session.get("user"):
+        flash("Please login to pay", "warning")
+        return redirect(url_for("login_page"))
+
+    cust_id = session["user"]["CustomerID"]
+    order_details = []
+    try:
+        resp = requests.get(f"{BASE_API_URL}/orders/details/{order_id}", timeout=8)
+        j = resp.json() if resp.content else {}
+        order_details = j.get("data", []) if j.get("success", True) else []
+    except Exception as e:
+        flash(f"Error fetching order details: {e}", "danger")
+        order_details = []
+
+    amount = 0.0
+    for it in order_details:
+        try:
+            amount += float(it.get("Price", 0)) * int(it.get("Quantity", 0))
+        except:
+            pass
+
+    if request.method == "POST":
+        method = request.form.get("method", "UPI")
+        try:
+            payload = {"order_id": int(order_id), "method": method, "amount": float(amount)}
+            resp = requests.post(f"{BASE_API_URL}/payments/make", json=payload, timeout=8)
+            j = resp.json() if resp.content else {}
+            if resp.status_code in (200, 201) and j.get("success"):
+                flash("Payment recorded. Order processed.", "success")
+                return redirect(url_for("orders_history", user_id=cust_id))
+            else:
+                flash(j.get("error") or j.get("message") or "Payment failed", "danger")
+        except Exception as e:
+            flash(f"Payment error: {e}", "danger")
+
+    return render_template("pay.html", order_details=order_details, amount=round(amount, 2), order_id=order_id)
+
+#-------------Order Deatils ---------
+@app.route("/orders/<int:order_id>")
+def order_details_page(order_id):
+    if not session.get("user"):
+        flash("Please login to view order details", "warning")
+        return redirect(url_for("login_page"))
+
+    cust_id = session["user"]["CustomerID"]
+    order_details = []
+    amount = 0.0
+
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor(dictionary=True)
+        
+        # Fetch Order details, including ImageURL, directly from DB
+        cur.execute("""
+            SELECT 
+                od.OrderID, od.Quantity, 
+                od.Price AS ItemPrice, 
+                p.Prod_Name AS ProductName, 
+                p.ImageURL,
+                v.Size, v.Color
+            FROM OrderDetails od
+            JOIN ProductVariant v ON od.VariantID = v.VariantID
+            JOIN Product p ON v.ProductID = p.ProductID
+            JOIN Orders co ON od.OrderID = co.OrderID
+            WHERE od.OrderID = %s AND co.CustomerID = %s
+        """, (order_id, cust_id)) # IMPORTANT: Verify the customer owns the order
+
+        rows = cur.fetchall() or []
+        
+        if not rows:
+            # Check if order exists (for helpful error messages)
+            cur.execute("SELECT 1 FROM CustomerOrder WHERE OrderID = %s", (order_id,))
+            if not cur.fetchone():
+                 flash("Order not found or does not belong to your account.", "danger")
+                 return redirect(url_for("my_orders_redirect"))
+            # If rows is empty but order exists, the order might be empty or have an issue
+            flash("Order details could not be loaded.", "warning")
+
+        # Process details
+        for r in rows:
+            price = float(r.get("ItemPrice", 0))
+            qty = int(r.get("Quantity", 0))
+            subtotal = price * qty
+            order_details.append({
+                "ProductName": r["ProductName"],
+                "ImageURL": r["ImageURL"], # <-- New field
+                "Size": r.get("Size"),
+                "Color": r.get("Color"),
+                "Price": price,
+                "Quantity": qty,
+                "Subtotal": subtotal
+            })
+            amount += subtotal
+
+    except Exception as e:
+        flash(f"Error fetching order details: {e}", "danger")
+        order_details = []
+
+    finally:
+        try:
+            cur.close(); conn.close()
+        except:
+            pass
+
+    return render_template(
+        "order_details.html", 
+        order_details=order_details, 
+        amount=round(amount, 2), 
+        order_id=order_id
+    )
+
+# ---------------- Orders ----------------
+@app.route("/orders")
+def my_orders_redirect():
+    if not session.get("user"):
+        flash("Please login", "warning")
+        return redirect(url_for("login_page"))
+    uid = session["user"]["CustomerID"]
+    return redirect(url_for("orders_history", user_id=uid))
+
+@app.route("/orders/history/<int:user_id>")
+def orders_history(user_id):
+    try:
+        resp = requests.get(f"{BASE_API_URL}/orders/history/{user_id}", timeout=8)
+        j = resp.json() if resp.content else {}
+        orders = j.get("data", []) if j.get("success", True) else []
+        
+        # 🌟 FIX: Explicitly convert TotalAmount from string/Decimal to float
+        for order in orders:
+            if 'TotalAmount' in order and order['TotalAmount'] is not None:
+                try:
+                    # Ensures Jinja receives a float type
+                    order['TotalAmount'] = float(order['TotalAmount'])
+                except (TypeError, ValueError):
+                    # Safety fallback
+                    order['TotalAmount'] = 0.0
+            else:
+                order['TotalAmount'] = 0.0
+                
+    except Exception as e:
+        flash(f"Error fetching orders: {e}", "danger")
+        orders = []
+    return render_template("orders.html", orders=orders)
+
+# ---------------- Auth ----------------
+@app.route("/auth/login", methods=["GET", "POST"])
+def login_page():
+    if request.method == "POST":
+        email = request.form.get("email")
+        password = request.form.get("password")
+        try:
+            payload = {"email": email, "password": password}
+            resp = requests.post(f"{BASE_API_URL}/auth/login", json=payload, timeout=6)
+            j = resp.json() if resp.content else {}
+            if resp.status_code == 200 and j.get("success"):
+                session["user"] = j.get("user") or {}
+                flash("Logged in successfully", "success")
+                return redirect(url_for("products_page"))
+            else:
+                flash(j.get("error") or "Invalid credentials", "danger")
+        except Exception as e:
+            flash(f"Login error: {e}", "danger")
+    return render_template("login.html")
+
+
+@app.route("/auth/register", methods=["GET", "POST"])
+def register_page():
+    if request.method == "POST":
+        name = request.form.get("name")
+        email = request.form.get("email")
+        phone = request.form.get("phone")
+        password = request.form.get("password")
+        try:
+            payload = {"name": name, "email": email, "phone": phone, "password": password}
+            resp = requests.post(f"{BASE_API_URL}/auth/register", json=payload, timeout=6)
+            j = resp.json() if resp.content else {}
+            if resp.status_code in (200, 201) and j.get("success"):
+                flash("Registration successful — please login", "success")
+                return redirect(url_for("login_page"))
+            else:
+                flash(j.get("error") or j.get("message") or "Registration failed", "danger")
+        except Exception as e:
+            flash(f"Registration error: {e}", "danger")
+    return render_template("register.html")
+
+
+@app.route("/auth/logout")
+def logout_page():
+    session.pop("user", None)
+    flash("Logged out", "info")
+    return redirect(url_for("home"))
+
+
+if __name__ == "__main__":
+    app.run(debug=True, threaded=True)
+
+--- config.py ---
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+DB_CONFIG = {
+    'host': os.getenv('DB_HOST', 'localhost'),
+    'user': os.getenv('DB_USER', 'root'),
+    'password': os.getenv('DB_PASSWORD', 'Siya123@root'),
+    'database': os.getenv('DB_NAME', 'retail_store')
+}
+
+--- db.py ---
+import mysql.connector
+from config import DB_CONFIG
+
+def get_db_connection():
+    return mysql.connector.connect(**DB_CONFIG)
+
+--- requirements.txt ---
+Flask==2.3.2
+mysql-connector-python==8.1.0
+python-dotenv==1.0.1
+Flask-Cors==4.0.0
+bcrypt==4.1.2
+--- routes\auth.py ---
+from flask import Blueprint, jsonify, request
+from db import get_db_connection
+import mysql.connector
+import bcrypt  
+
+auth_bp = Blueprint("auth", __name__)
+
+# ---------- LOGIN ----------
+@auth_bp.route("/auth/login", methods=["POST"])
+def login():
+    """
+    POST /api/auth/login
+    JSON body: { "email": "user@example.com", "password": "1234" }
+    """
+    data = request.get_json(force=True, silent=True) or {}
+    email = data.get("email")
+    password = data.get("password")
+
+    if not email or not password:
+        return jsonify({"success": False, "error": "Email and password required"}), 400
+
+    conn = None
+    cursor = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+
+        # Fetch stored hash from DB
+        cursor.execute("""
+            SELECT c.CustomerID, c.Name, c.Email, p.Password AS hashed_pw
+            FROM Customer c
+            JOIN Password p ON c.CustomerID = p.CustomerID
+            WHERE c.Email = %s
+        """, (email,))
+        user = cursor.fetchone()
+
+        # Compare provided password with stored hash
+        if user and bcrypt.checkpw(password.encode('utf-8'), user["hashed_pw"].encode('utf-8')):
+            user.pop("hashed_pw")  # remove hash before returning
+            return jsonify({"success": True, "user": user}), 200
+        else:
+            return jsonify({"success": False, "error": "Invalid email or password"}), 401
+
+    except mysql.connector.Error as err:
+        return jsonify({"success": False, "error": str(err)}), 500
+
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+
+
+# ---------- REGISTER ----------
+@auth_bp.route("/auth/register", methods=["POST"])
+def register():
+    """
+    POST /api/auth/register
+    JSON body: {
+      "name": "John Doe",
+      "email": "john@example.com",
+      "phone": "9998887777",
+      "password": "test123"
+    }
+    """
+    data = request.get_json(force=True, silent=True) or {}
+    name = data.get("name")
+    email = data.get("email")
+    phone = data.get("phone")
+    password = data.get("password")
+
+    if not name or not email or not phone or not password:
+        return jsonify({"success": False, "error": "Missing required fields"}), 400
+
+    conn = None
+    cursor = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        # Hash the password before saving
+        hashed_pw = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+
+        # Insert into Customer
+        cursor.execute("""
+            INSERT INTO Customer (Name, Email, Phone)
+            VALUES (%s, %s, %s)
+        """, (name, email, phone))
+        cust_id = cursor.lastrowid
+
+        # Insert hashed password
+        cursor.execute("""
+            INSERT INTO Password (CustomerID, Password)
+            VALUES (%s, %s)
+        """, (cust_id, hashed_pw))
+
+        conn.commit()
+        return jsonify({
+            "success": True,
+            "message": "Registered successfully",
+            "customer_id": cust_id
+        }), 201
+
+    except mysql.connector.IntegrityError as e:
+        if "Email" in str(e):
+            return jsonify({"success": False, "error": "Email already exists"}), 400
+        elif "Phone" in str(e):
+            return jsonify({"success": False, "error": "Phone number already exists"}), 400
+        else:
+            return jsonify({"success": False, "error": str(e)}), 400
+
+    except mysql.connector.Error as err:
+        return jsonify({"success": False, "error": str(err)}), 500
+
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+
+
+# ---------- UPDATE PASSWORD ----------
+@auth_bp.route("/auth/update-password", methods=["POST"])
+def update_password():
+    """
+    POST /api/auth/update-password
+    JSON body: { "email": "...", "old_password": "...", "new_password": "..." }
+    """
+    data = request.get_json(force=True, silent=True) or {}
+    email = data.get("email")
+    old_pw = data.get("old_password")
+    new_pw = data.get("new_password")
+
+    if not email or not old_pw or not new_pw:
+        return jsonify({"success": False, "error": "Missing required fields"}), 400
+
+    conn = None
+    cursor = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+
+        # Verify old password
+        cursor.execute("""
+            SELECT c.CustomerID, p.Password AS hashed_pw
+            FROM Customer c
+            JOIN Password p ON c.CustomerID = p.CustomerID
+            WHERE c.Email = %s
+        """, (email,))
+        record = cursor.fetchone()
+
+        if not record or not bcrypt.checkpw(old_pw.encode('utf-8'), record["hashed_pw"].encode('utf-8')):
+            return jsonify({"success": False, "error": "Invalid old password or email"}), 400
+
+        # Hash new password
+        new_hashed_pw = bcrypt.hashpw(new_pw.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+
+        # Update
+        cursor.execute("""
+            UPDATE Password
+            SET Password = %s
+            WHERE CustomerID = %s
+        """, (new_hashed_pw, record["CustomerID"]))
+
+        conn.commit()
+        return jsonify({"success": True, "message": "Password updated successfully"}), 200
+
+    except mysql.connector.Error as err:
+        return jsonify({"success": False, "error": str(err)}), 500
+
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+
+--- routes\cart.py ---
+# routes/cart.py
+from flask import Blueprint, jsonify, request
+from db import get_db_connection
+import mysql.connector
+
+cart_bp = Blueprint("cart", __name__)
+
+def _fetch_proc_results(cursor):
+    """
+    Helper: consume stored_results() and return combined list of dict rows.
+    Expects cursor configured with dictionary=True.
+    """
+    rows = []
+    for result in cursor.stored_results():
+        rows.extend(result.fetchall())
+    return rows
+
+@cart_bp.route("/cart/<int:cust_id>", methods=["GET"])
+def get_cart(cust_id):
+    """
+    GET /api/cart/<cust_id>
+    Returns the customer's cart using show_cart(cust_id).
+    """
+    conn = None
+    cursor = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        cursor.callproc("show_cart", (cust_id,))
+        data = _fetch_proc_results(cursor)
+        return jsonify({"success": True, "data": data}), 200
+
+    except mysql.connector.Error as err:
+        # MySQL stored procs may SIGNAL errors; return them
+        return jsonify({"success": False, "error": str(err)}), 400
+
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+
+
+@cart_bp.route("/cart/add", methods=["POST"])
+def add_to_cart():
+    """
+    POST /api/cart/add
+    JSON body: { "customer_id": 1, "variant_id": 2, "quantity": 3 }
+    Uses sp_add_to_cart(cust_id, variant_id, qty) -> will INSERT or UPDATE Quantity += qty
+    """
+    payload = request.get_json(force=True, silent=True) or {}
+    cust_id = payload.get("customer_id")
+    variant_id = payload.get("variant_id")
+    qty = payload.get("quantity", 1)
+
+    if not cust_id or not variant_id:
+        return jsonify({"success": False, "error": "customer_id and variant_id required"}), 400
+
+    conn = None
+    cursor = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        # call stored procedure that raises SIGNAL on insufficient stock
+        cursor.callproc("sp_add_to_cart", (cust_id, variant_id, qty))
+        # consume any results (some connectors require this)
+        for _ in cursor.stored_results():
+            pass
+        # return updated cart
+        conn.commit()
+        cursor.close()
+        cursor = conn.cursor(dictionary=True)
+        cursor.callproc("show_cart", (cust_id,))
+        data = _fetch_proc_results(cursor)
+        return jsonify({"success": True, "data": data}), 200
+
+    except mysql.connector.Error as err:
+        return jsonify({"success": False, "error": str(err)}), 400
+
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+
+
+@cart_bp.route("/cart/remove", methods=["DELETE"])
+def remove_from_cart():
+    """
+    DELETE /api/cart/remove?customer_id=1&variant_id=2
+    Or JSON body: { "customer_id": 1, "variant_id": 2 }
+    Uses sp_remove_from_cart(cust_id, variant_id)
+    """
+    # accept both query params and JSON body
+    cust_id = request.args.get("customer_id", None)
+    variant_id = request.args.get("variant_id", None)
+    if not cust_id or not variant_id:
+        payload = request.get_json(force=True, silent=True) or {}
+        cust_id = payload.get("customer_id", cust_id)
+        variant_id = payload.get("variant_id", variant_id)
+
+    if not cust_id or not variant_id:
+        return jsonify({"success": False, "error": "customer_id and variant_id required"}), 400
+
+    conn = None
+    cursor = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.callproc("sp_remove_from_cart", (int(cust_id), int(variant_id)))
+        for _ in cursor.stored_results():
+            pass
+        conn.commit()
+        return jsonify({"success": True, "message": "removed from cart"}), 200
+
+    except mysql.connector.Error as err:
+        if conn:
+            conn.rollback()
+        return jsonify({"success": False, "error": str(err)}), 400
+
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        return jsonify({"success": False, "error": str(e)}), 500
+
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+
+
+@cart_bp.route("/cart/update", methods=["PUT"])
+def update_cart_quantity():
+    """
+    PUT /api/cart/update
+    JSON body: { "customer_id": 1, "variant_id": 2, "quantity": 5 }
+    Sets the cart quantity to the given absolute quantity by:
+      - calling sp_remove_from_cart
+      - then calling sp_add_to_cart with new qty (inside a transaction)
+    Note: if quantity == 0, item is removed.
+    """
+    payload = request.get_json(force=True, silent=True) or {}
+    cust_id = payload.get("customer_id")
+    variant_id = payload.get("variant_id")
+    qty = payload.get("quantity")
+
+    if not cust_id or not variant_id or qty is None:
+        return jsonify({"success": False, "error": "customer_id, variant_id and quantity required"}), 400
+
+    try:
+        qty = int(qty)
+    except:
+        return jsonify({"success": False, "error": "quantity must be integer"}), 400
+
+    conn = None
+    cursor = None
+    try:
+        conn = get_db_connection()
+        # start explicit transaction to keep operations atomic
+        conn.start_transaction()
+        cursor = conn.cursor()
+        # remove any existing entry
+        cursor.callproc("sp_remove_from_cart", (cust_id, variant_id))
+        for _ in cursor.stored_results():
+            pass
+
+        if qty > 0:
+            # add with exact qty (sp_add_to_cart increments if exists, but we've removed it above)
+            cursor.callproc("sp_add_to_cart", (cust_id, variant_id, qty))
+            for _ in cursor.stored_results():
+                pass
+
+        conn.commit()
+
+        # fetch and return updated cart
+        cursor.close()
+        cursor = conn.cursor(dictionary=True)
+        cursor.callproc("show_cart", (cust_id,))
+        data = _fetch_proc_results(cursor)
+        return jsonify({"success": True, "data": data}), 200
+
+    except mysql.connector.Error as err:
+        if conn:
+            conn.rollback()
+        return jsonify({"success": False, "error": str(err)}), 400
+
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        return jsonify({"success": False, "error": str(e)}), 500
+
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+
+--- routes\customers.py ---
+# routes/customers.py
+from flask import Blueprint, jsonify, request
+from db import get_db_connection
+import mysql.connector
+
+customers_bp = Blueprint("customers", __name__)
+
+def _fetch_proc_results(cursor):
+    rows = []
+    for result in cursor.stored_results():
+        rows.extend(result.fetchall())
+    return rows
+
+@customers_bp.route("/customers/<int:cust_id>/addresses", methods=["GET"])
+def get_customer_addresses(cust_id):
+    conn = None
+    cursor = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("SELECT * FROM Address WHERE CustomerID = %s", (cust_id,))
+        data = cursor.fetchall()
+        return jsonify({"success": True, "data": data}), 200
+    except mysql.connector.Error as err:
+        return jsonify({"success": False, "error": str(err)}), 400
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+
+@customers_bp.route("/customers/addresses/add", methods=["POST"])
+def add_customer_address():
+    payload = request.get_json()
+    cust_id = payload.get("customer_id")
+    addr_line = payload.get("address_line_1")
+    city = payload.get("city")
+    pincode = payload.get("pincode")
+    addr_type = payload.get("type", "Home")
+
+    if not all([cust_id, addr_line, city, pincode]):
+        return jsonify({"success": False, "error": "customer_id, address_line_1, city, and pincode are required"}), 400
+
+    conn = None
+    cursor = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        query = """
+            INSERT INTO Address (CustomerID, AddressLine1, City, PinCode, AddressType)
+            VALUES (%s, %s, %s, %s, %s)
+        """
+        cursor.execute(query, (cust_id, addr_line, city, pincode, addr_type))
+        conn.commit()
+        return jsonify({"success": True, "message": "Address added"}), 201
+    except mysql.connector.Error as err:
+        if conn: conn.rollback()
+        return jsonify({"success": False, "error": str(err)}), 400
+    except Exception as e:
+        if conn: conn.rollback()
+        return jsonify({"success": False, "error": str(e)}), 500
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+
+
+--- routes\orders.py ---
+# routes/orders.py
+from flask import Blueprint, jsonify, request
+from db import get_db_connection
+import mysql.connector
+
+orders_bp = Blueprint("orders", __name__)
+
+def _fetch_proc_results(cursor):
+    rows = []
+    for result in cursor.stored_results():
+        rows.extend(result.fetchall())
+    return rows
+
+@orders_bp.route("/orders/history/<int:cust_id>", methods=["GET"])
+def get_order_history(cust_id):
+    conn = None
+    cursor = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        cursor.callproc("show_order_history", (cust_id,))
+        data = _fetch_proc_results(cursor)
+        return jsonify({"success": True, "data": data}), 200
+    except mysql.connector.Error as err:
+        return jsonify({"success": False, "error": str(err)}), 400
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+
+@orders_bp.route("/orders/details/<int:order_id>", methods=["GET"])
+def get_order_details(order_id):
+    conn = None
+    cursor = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        cursor.callproc("show_order_details", (order_id,))
+        data = _fetch_proc_results(cursor)
+        return jsonify({"success": True, "data": data}), 200
+    except mysql.connector.Error as err:
+        return jsonify({"success": False, "error": str(err)}), 400
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+
+@orders_bp.route("/orders/place", methods=["POST"])
+def place_order():
+    payload = request.get_json()
+    cust_id = payload.get("customer_id")
+    addr_id = payload.get("shipping_address_id")
+
+    if not cust_id or not addr_id:
+        return jsonify({"success": False, "error": "customer_id and shipping_address_id are required"}), 400
+
+    conn = None
+    cursor = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        cursor.callproc("sp_place_order", (cust_id, addr_id))
+        data = _fetch_proc_results(cursor)
+        new_order_id = data[0] if data else None
+        conn.commit()
+        return jsonify({"success": True, "message": "Order placed successfully", "data": new_order_id}), 201
+    except mysql.connector.Error as err:
+        if conn: conn.rollback()
+        return jsonify({"success": False, "error": str(err)}), 400
+    except Exception as e:
+        if conn: conn.rollback()
+        return jsonify({"success": False, "error": str(e)}), 500
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+
+@orders_bp.route("/orders/cancel", methods=["POST"])
+def cancel_order():
+    payload = request.get_json()
+    order_id = payload.get("order_id")
+
+    if not order_id:
+        return jsonify({"success": False, "error": "order_id is required"}), 400
+
+    conn = None
+    cursor = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.callproc("cancel_order", (order_id,))
+        for _ in cursor.stored_results():
+            pass
+        conn.commit()
+        return jsonify({"success": True, "message": "Order cancelled"}), 200
+    except mysql.connector.Error as err:
+        if conn: conn.rollback()
+        return jsonify({"success": False, "error": str(err)}), 400
+    except Exception as e:
+        if conn: conn.rollback()
+        return jsonify({"success": False, "error": str(e)}), 500
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+--- routes\payments.py ---
+# routes/payments.py
+from flask import Blueprint, jsonify, request
+from db import get_db_connection
+import mysql.connector
+
+payments_bp = Blueprint("payments", __name__)
+
+def _fetch_proc_results(cursor):
+    rows = []
+    for result in cursor.stored_results():
+        rows.extend(result.fetchall())
+    return rows
+
+@payments_bp.route("/payments/make", methods=["POST"])
+def make_payment():
+    """
+    POST /api/payments/make
+    JSON body: { "order_id": 101, "method": "Credit Card", "amount": 5898.99 }
+    Uses sp_make_payment(order_id, method, amt)
+    """
+    payload = request.get_json()
+    order_id = payload.get("order_id")
+    method = payload.get("method")
+    amount = payload.get("amount")
+
+    if not all([order_id, method, amount]):
+        return jsonify({"success": False, "error": "order_id, method, and amount are required"}), 400
+
+    conn = None
+    cursor = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        cursor.callproc("sp_make_payment", (order_id, method, amount))
+        
+        for _ in cursor.stored_results(): 
+            pass
+        
+        conn.commit()
+        return jsonify({"success": True, "message": "Payment recorded successfully"}), 201
+
+    except mysql.connector.Error as err:
+        if conn: conn.rollback()
+        return jsonify({"success": False, "error": str(err)}), 400
+    except Exception as e:
+        if conn: conn.rollback()
+        return jsonify({"success": False, "error": str(e)}), 500
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+
+@payments_bp.route("/payments/refund", methods=["POST"])
+def process_refund():
+    """
+    POST /api/payments/refund
+    JSON body: { "payment_id": 1001 }
+    Uses process_refund(payment_id)
+    """
+    payload = request.get_json()
+    payment_id = payload.get("payment_id")
+
+    if not payment_id:
+        return jsonify({"success": False, "error": "payment_id is required"}), 400
+
+    conn = None
+    cursor = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.callproc("process_refund", (payment_id,))
+        for _ in cursor.stored_results(): 
+            pass
+        
+        conn.commit()
+        return jsonify({"success": True, "message": "Refund processed successfully"}), 200
+
+    except mysql.connector.Error as err:
+        if conn: conn.rollback()
+        return jsonify({"success": False, "error": str(err)}), 400
+    except Exception as e:
+        if conn: conn.rollback()
+        return jsonify({"success": False, "error": str(e)}), 500
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+--- routes\products.py ---
+from flask import Blueprint, jsonify, request
+from db import get_db_connection
+
+products_bp = Blueprint('products', __name__)
+
+@products_bp.route('/products', methods=['GET'])
+def get_products():
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+
+        category_id = request.args.get('category_id', None)
+        search_kw = request.args.get('search', '')
+
+        if category_id:
+            cursor.callproc('show_product_catalog', (category_id, search_kw))
+        else:
+            cursor.callproc('show_product_catalog', (None, search_kw))
+
+        # Stored procedures return results through cursor.stored_results()
+        data = []
+        for result in cursor.stored_results():
+            data.extend(result.fetchall())
+
+        return jsonify({'success': True, 'data': data})
+
+    except Exception as e:
+        print("Error:", e)
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+    finally:
+        cursor.close()
+        conn.close()
+
+
+
+@products_bp.route('/products/<int:variant_id>', methods=['GET'])
+def get_product_details(variant_id):
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+
+        # Columns match your schema exactly
+        cursor.execute("""
+            SELECT p.Prod_Name AS ProductName,
+                   CONCAT(v.Size, '/', v.Color) AS Variant,
+                   v.Price,
+                   v.Stock
+            FROM ProductVariant v
+            JOIN Product p ON p.ProductID = v.ProductID
+            WHERE v.VariantID = %s
+        """, (variant_id,))
+        product = cursor.fetchone()
+
+        if not product:
+            return jsonify({'success': False, 'message': 'Product not found'}), 404
+
+        # Reviews fetched using your stored procedure
+        cursor.callproc('show_product_reviews', (variant_id,))
+        reviews = []
+        for result in cursor.stored_results():
+            reviews.extend(result.fetchall())
+
+        return jsonify({
+            'success': True,
+            'product': product,
+            'reviews': reviews
+        })
+
+    except Exception as e:
+        print("Error:", e)
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+    finally:
+        cursor.close()
+        conn.close()
+--- static\ef.txt ---
+
+--- static\css\style.css ---
+body {
+  margin: 0;
+  font-family: "Segoe UI", Arial, sans-serif;
+  background: #f5f5f5;
+  color: #333;
+}
+
+/* Navbar */
+.navbar {
+  background: #222;
+  color: white;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1rem 2rem;
+}
+
+.navbar a {
+  color: white;
+  text-decoration: none;
+  margin: 0 1rem;
+  font-weight: 500;
+}
+
+.navbar a:hover {
+  text-decoration: underline;
+}
+
+/* Hero section */
+.hero {
+  text-align: center;
+  padding: 100px 20px;
+  background: linear-gradient(135deg, #2980b9, #6dd5fa);
+  color: white;
+}
+
+.hero .btn {
+  background: white;
+  color: #2980b9;
+  padding: 10px 20px;
+  border-radius: 6px;
+  text-decoration: none;
+  font-weight: bold;
+}
+
+.hero .btn:hover {
+  background: #f4f4f4;
+}
+
+.highlight {
+  color: #ffeaa7;
+}
+
+/* Products */
+.products {
+  padding: 40px 5%;
+}
+
+.product-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 20px;
+}
+
+.product-card {
+  background: white;
+  border-radius: 8px;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1);
+  padding: 15px;
+  text-align: center;
+}
+
+.product-card h3 {
+  margin-top: 0;
+}
+
+.btn {
+  background: #2980b9;
+  color: white;
+  border: none;
+  padding: 10px 15px;
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.btn:hover {
+  background: #3498db;
+}
+
+/* Footer */
+.footer {
+  text-align: center;
+  padding: 1rem;
+  background: #222;
+  color: white;
+  margin-top: 50px;
+}
+
+--- static\imgs\Adidad_nmdv3.jpg ---
+[[Skipped: Binary or non-UTF8 content]]
+
+--- static\imgs\canonEOSr8.jpg ---
+[[Skipped: Binary or non-UTF8 content]]
+
+--- static\imgs\ceramic_dinner.jpg ---
+[[Skipped: Binary or non-UTF8 content]]
+
+--- static\imgs\cotton_shirt.jpg ---
+[[Skipped: Binary or non-UTF8 content]]
+
+--- static\imgs\fitbit_versa5.jpg ---
+[[Skipped: Binary or non-UTF8 content]]
+
+--- static\imgs\gopromax2.jpg ---
+[[Skipped: Binary or non-UTF8 content]]
+
+--- static\imgs\HP_spectrex360.jpg ---
+[[Skipped: Binary or non-UTF8 content]]
+
+--- static\imgs\iphone15.jpg ---
+[[Skipped: Binary or non-UTF8 content]]
+
+--- static\imgs\MacbookAirM3.jpg ---
+[[Skipped: Binary or non-UTF8 content]]
+
+--- static\imgs\midnight_labyrinth.jpg ---
+[[Skipped: Binary or non-UTF8 content]]
+
+--- static\imgs\nike_metcon9.jpg ---
+[[Skipped: Binary or non-UTF8 content]]
+
+--- static\imgs\over_ear_headphones.jpg ---
+[[Skipped: Binary or non-UTF8 content]]
+
+--- static\imgs\samsung_galaxy_zfold5.jpg ---
+[[Skipped: Binary or non-UTF8 content]]
+
+--- static\imgs\smartphone_stand.jpg ---
+[[Skipped: Binary or non-UTF8 content]]
+
+--- static\imgs\Sony_WF-1000XM5.jpg ---
+[[Skipped: Binary or non-UTF8 content]]
+
+--- templates\base.html ---
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}MyShop{% endblock %}</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+<nav class="navbar navbar-expand-lg navbar-dark bg-dark">
+  <div class="container">
+    <a class="navbar-brand" href="{{ url_for('home') }}">MyShop</a>
+    <div class="collapse navbar-collapse">
+      <ul class="navbar-nav ms-auto">
+        {% if session.get('user') %}
+          <li class="nav-item"><a class="nav-link" href="{{ url_for('products_page') }}">Products</a></li>
+          <li class="nav-item"><a class="nav-link" href="{{ url_for('cart_page') }}">Cart</a></li>
+          <li class="nav-item"><a class="nav-link" href="{{ url_for('orders_history', user_id=session.get('user').get('CustomerID')) }}">Orders</a></li>
+          <li class="nav-item"><a class="nav-link disabled" href="#">Hi, {{ session.get('user').get('Name') or session.get('user').get('name') or 'User' }}</a></li>
+          <li class="nav-item"><a class="nav-link" href="{{ url_for('logout_page') }}">Logout</a></li>
+        {% else %}
+          <li class="nav-item"><a class="nav-link" href="{{ url_for('products_page') }}">Products</a></li>
+          <li class="nav-item"><a class="nav-link" href="{{ url_for('login_page') }}">Login</a></li>
+          <li class="nav-item"><a class="nav-link" href="{{ url_for('register_page') }}">Register</a></li>
+        {% endif %}
+      </ul>
+    </div>
+  </div>
+</nav>
+
+<div class="container mt-3">
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+      {% for category, msg in messages %}
+        <div class="alert alert-{{ category if category in ['success','danger','warning','info'] else 'info' }} alert-dismissible fade show" role="alert">
+          {{ msg }}
+          <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+        </div>
+      {% endfor %}
+    {% endif %}
+  {% endwith %}
+</div>
+
+<main class="container my-4">
+  {% block content %}{% endblock %}
+</main>
+
+<footer class="bg-light text-center py-3">
+  <div class="container">
+    <small>&copy; {{ current_year }} MyShop</small>
+  </div>
+</footer>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>
+
+--- templates\cart.html ---
+{% extends "base.html" %}
+{% block title %}Your Cart{% endblock %}
+{% block content %}
+<h2>Your Cart</h2>
+
+{% if cart_items %}
+<table class="table table-striped align-middle mt-3">
+  <thead class="table-dark">
+    <tr>
+      <th>Product</th>
+      <th>Variant</th>
+      <th>Price (₹)</th>
+      <th>Quantity</th>
+      <th>Subtotal (₹)</th>
+      <th>Actions</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for it in cart_items %}
+    <tr>
+      <td>{{ it.ProductName }}</td>
+      <td>{{ it.Size or '' }} {{ it.Color or '' }}</td>
+      <td>₹{{ "%.2f"|format(it.Price) }}</td>
+      <td>
+        <form method="POST" action="{{ url_for('update_cart') }}" class="d-flex gap-2">
+          <input type="hidden" name="variant_id" value="{{ it.VariantID }}">
+          <input type="number" name="quantity" min="0" value="{{ it.Quantity }}" class="form-control form-control-sm" style="width:90px;">
+          <button class="btn btn-sm btn-primary" type="submit">Update</button>
+        </form>
+      </td>
+      <td>₹{{ "%.2f"|format(it.Subtotal) }}</td>
+      <td>
+        <form method="POST" action="{{ url_for('remove_from_cart') }}">
+          <input type="hidden" name="variant_id" value="{{ it.VariantID }}">
+          <button class="btn btn-sm btn-danger" type="submit">Remove</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+<div class="d-flex justify-content-between align-items-center mt-3">
+  <h4>Total: ₹{{ "%.2f"|format(total_price) }}</h4>
+  <a class="btn btn-success" href="{{ url_for('checkout_page') }}">Proceed to Checkout</a>
+</div>
+
+{% else %}
+<div class="alert alert-info mt-3">Your cart is empty. <a href="{{ url_for('products_page') }}">Shop now</a>.</div>
+{% endif %}
+{% endblock %}
+
+--- templates\checkout.html ---
+{% extends "base.html" %}
+{% block content %}
+<div class="container mt-4">
+  <h2>Checkout</h2>
+
+  {% if cart_items %}
+  <h4 class="mt-3">Your Cart</h4>
+  <table class="table table-bordered mt-2">
+    <thead>
+      <tr>
+        <th>Product</th>
+        <th>Variant</th>
+        <th>Quantity</th>
+        <th>Price</th>
+        <th>Subtotal</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for item in cart_items %}
+      <tr>
+        <td>{{ item.ProductName }}</td>
+        <td>{{ item.Size }} / {{ item.Color }}</td>
+        <td>{{ item.Quantity }}</td>
+        <td>₹{{ "%.2f"|format(item.Price) }}</td>
+        <td>₹{{ "%.2f"|format(item.Subtotal) }}</td>
+      </tr>
+      {% endfor %}
+      <tr class="fw-bold">
+        <td colspan="4" class="text-end">Total</td>
+        <td>₹{{ "%.2f"|format(total) }}</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <hr>
+
+  <h4>Select Shipping Address</h4>
+  <form method="POST" class="mb-4">
+    <div class="mb-3">
+      {% if addresses %}
+      <select name="shipping_address_id" class="form-select" required>
+        <option value="">-- Choose Address --</option>
+        {% for a in addresses %}
+        <option value="{{ a.AddressID }}">
+          {{ a.AddressLine1 }}, {{ a.City }} ({{ a.Type }})
+        </option>
+        {% endfor %}
+      </select>
+      {% else %}
+      <p>No saved addresses. Please add one below.</p>
+      {% endif %}
+    </div>
+    <button type="submit" class="btn btn-success">Place Order</button>
+  </form>
+
+  <hr>
+
+  <h4>Add New Address</h4>
+  <form method="POST">
+    <input type="hidden" name="add_address" value="1">
+    <div class="mb-2">
+      <input type="text" name="address_line_1" class="form-control" placeholder="Address Line" required>
+    </div>
+    <div class="mb-2">
+      <input type="text" name="city" class="form-control" placeholder="City" required>
+    </div>
+    <div class="mb-2">
+      <input type="text" name="pincode" class="form-control" placeholder="Pincode" required>
+    </div>
+    <div class="mb-2">
+      <select name="type" class="form-select">
+        <option>Home</option>
+        <option>Work</option>
+        <option>Other</option>
+      </select>
+    </div>
+    <button type="submit" class="btn btn-primary">Add Address</button>
+  </form>
+
+  {% else %}
+  <p>Your cart is empty.</p>
+  {% endif %}
+</div>
+{% endblock %}
+
+--- templates\home.html ---
+{% extends "base.html" %}
+{% block title %}Welcome — MyShop{% endblock %}
+{% block content %}
+<div class="text-center py-5">
+  <h1>Welcome to MyShop</h1>
+  <p class="lead">Sign up or login to start shopping.</p>
+  <div class="mt-3">
+    <a class="btn btn-primary me-2" href="{{ url_for('login_page') }}">Login</a>
+    <a class="btn btn-outline-primary" href="{{ url_for('register_page') }}">Register</a>
+  </div>
+</div>
+
+<div class="mt-4">
+  <h4>Featured</h4>
+  <div class="row">
+    {% for p in featured_products %}
+    <div class="col-md-4">
+      <div class="card mb-3">
+        <div class="card-body">
+          <h5 class="card-title">{{ p.Prod_Name }}</h5>
+          <p class="card-text">{{ p.Description }}</p>
+          {% if p.variants %}
+            <small class="text-muted">Variants:</small>
+            <ul class="mb-0">
+              {% for v in p.variants %}
+                <li>{{ v.Size }}/{{ v.Color }} — ₹{{ "%.2f"|format(v.Price) }} ({{ v.Stock }} in stock)</li>
+              {% endfor %}
+            </ul>
+          {% endif %}
+          <a href="{{ url_for('products_page') }}" class="btn btn-sm btn-outline-primary mt-2">View products</a>
+        </div>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% endblock %}
+
+--- templates\login.html ---
+{% extends "base.html" %}
+{% block title %}Login{% endblock %}
+{% block content %}
+<div class="row justify-content-center mt-5">
+  <div class="col-md-5">
+    <h3>Login</h3>
+    <form method="POST">
+      <div class="mb-3">
+        <label class="form-label">Email</label>
+        <input name="email" type="email" class="form-control" required>
+      </div>
+      <div class="mb-3">
+        <label class="form-label">Password</label>
+        <input name="password" type="password" class="form-control" required>
+      </div>
+      <button class="btn btn-primary" type="submit">Login</button>
+      <a class="btn btn-link" href="{{ url_for('register_page') }}">Register</a>
+    </form>
+  </div>
+</div>
+{% endblock %}
+
+--- templates\orders.html ---
+{% extends "base.html" %}
+{% block title %}Your Orders{% endblock %}
+{% block content %}
+
+<h2>Your Orders</h2>
+
+{% if orders %}
+<div class="list-group">
+    {% for order in orders %}
+    <a href="{{ url_for('order_details_page', order_id=order.OrderID) }}" class="list-group-item list-group-item-action">
+        <div class="d-flex w-100 justify-content-between">
+            <h5 class="mb-1">Order #{{ order.OrderID }}</h5>
+            <small class="text-muted">
+                Placed: {{ order.OrderDate if order.OrderDate else order.OrderTimestamp if order.OrderTimestamp else 'N/A' }}
+            </small>
+        </div>
+        
+        <p class="mb-1">
+            **Total:** ₹{{ "%.2f"|format(order.TotalAmount if order.TotalAmount else 0) }}
+        </p>
+        
+        <small class="text-primary">
+            **Status:** {{ order.Status if order.Status else 'Processing' }}
+        </small>
+    </a>
+    {% endfor %}
+</div>
+{% else %}
+<div class="alert alert-info" role="alert">
+    You have no orders yet. Go shop!
+</div>
+{% endif %}
+
+{% endblock %}
+--- templates\order_details.html ---
+{% extends "base.html" %}
+{% block title %}Order #{{ order_id }}{% endblock %}
+{% block content %}
+
+<h2>Order Details (#{{ order_id }})</h2>
+
+{% if order_details %}
+<table class="table table-striped align-middle">
+    <thead>
+        <tr>
+            <th>Product</th>
+            <th class="text-center">Image</th>
+            <th>Variant</th>
+            <th class="text-end">Price</th>
+            <th class="text-end">Quantity</th>
+            <th class="text-end">Subtotal</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for item in order_details %}
+        <tr>
+            <td>
+                {{ item.ProductName }} 
+            </td>
+            <td class="text-center">
+                <img src="{{ url_for('static', filename='imgs/' + item.ImageURL) }}" 
+                     alt="{{ item.ProductName }}" 
+                     style="height: 50px; width: 50px; object-fit: contain;">
+            </td>
+            <td>
+                {% if item.Size or item.Color %}{{ item.Size }}/{{ item.Color }}{% endif %}
+            </td>
+            <td class="text-end">₹{{ "%.2f"|format(item.Price) }}</td>
+            <td class="text-end">{{ item.Quantity }}</td>
+            <td class="text-end">₹{{ "%.2f"|format(item.Price * item.Quantity) }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+    <tfoot>
+        <tr>
+            <th colspan="5" class="text-end">Order Total:</th>
+            <th class="text-end">₹{{ "%.2f"|format(amount) }}</th>
+        </tr>
+    </tfoot>
+</table>
+{% else %}
+<p>Could not load details for this order, or the order is empty.</p>
+{% endif %}
+
+<a href="{{ url_for('my_orders_redirect') }}" class="btn btn-secondary mt-3">Back to Orders History</a>
+
+{% endblock %}
+--- templates\pay.html ---
+{% extends "base.html" %}
+{% block title %}Payment{% endblock %}
+{% block content %}
+<h2>Payment — Order {{ order_id }}</h2>
+
+<div class="card mb-3">
+  <div class="card-body">
+    <h5>Order Summary</h5>
+    <ul class="list-group mb-3">
+      {% for it in order_details %}
+        <li class="list-group-item d-flex justify-content-between">
+          <div>{{ it.ProductName or it.ProductName }}</div>
+          <div>₹{{ "%.2f"|format((it.Price|default(0)|float) * (it.Quantity|default(1)|int)) }}</div>
+        </li>
+      {% endfor %}
+    </ul>
+
+    <h4>Total: ₹{{ "%.2f"|format(amount) }}</h4>
+  </div>
+</div>
+
+<form method="POST">
+  <div class="mb-3">
+    <label class="form-label">Payment Method</label>
+    <select name="method" class="form-select">
+      <option>UPI</option>
+      <option>Credit Card</option>
+      <option>Debit Card</option>
+      <option>Net Banking</option>
+    </select>
+  </div>
+  <button class="btn btn-success" type="submit">Simulate Payment (₹{{ "%.2f"|format(amount) }})</button>
+</form>
+{% endblock %}
+
+--- templates\products.html ---
+{% extends "base.html" %}
+{% block title %}Products{% endblock %}
+{% block content %}
+<h2>Products</h2>
+<div class="row">
+  {% for p in products %}
+  <div class="col-md-4 mb-4">
+    <div class="card h-100">
+      <img src="{{ url_for('static', filename='imgs/' + p.ImageURL) }}" 
+           class="card-img-top" 
+           alt="{{ p.Prod_Name }}" 
+           style="height: 200px; object-fit: contain; padding: 10px; background-color: #f8f9fa;">
+            <div class="card-body d-flex flex-column">
+        <h5 class="card-title">{{ p.Prod_Name }}</h5>
+        <p class="card-text">{{ p.Description }}</p>
+
+        {% if p.variants %}
+        <form method="POST" action="{{ url_for('add_to_cart_front') }}" class="mt-auto">
+          <div class="mb-2">
+            <select name="variant_id" class="form-select form-select-sm" required>
+              {% for v in p.variants %}
+                <option value="{{ v.VariantID }}">{{ v.Size }}/{{ v.Color }} — ₹{{ "%.2f"|format(v.Price) }} (stock: {{ v.Stock }})</option>
+              {% endfor %}
+            </select>
+         </div>
+
+          <div class="d-flex gap-2">
+            <input type="number" name="quantity" value="1" min="1" class="form-control form-control-sm" style="width:80px;">
+            <button type="submit" class="btn btn-primary btn-sm">Add to cart</button>
+          </div>
+        </form>
+        {% else %}
+          <p class="text-muted">No variants available</p>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% endblock %}
+--- templates\register.html ---
+{% extends "base.html" %}
+{% block title %}Register{% endblock %}
+{% block content %}
+<div class="row justify-content-center mt-5">
+  <div class="col-md-6">
+    <h3>Create account</h3>
+    <form method="POST">
+      <div class="mb-3">
+        <label class="form-label">Name</label>
+        <input name="name" class="form-control" required>
+      </div>
+      <div class="mb-3">
+        <label class="form-label">Email</label>
+        <input name="email" type="email" class="form-control" required>
+      </div>
+      <div class="mb-3">
+        <label class="form-label">Phone</label>
+        <input name="phone" class="form-control" required>
+      </div>
+      <div class="mb-3">
+        <label class="form-label">Password</label>
+        <input name="password" type="password" class="form-control" required>
+      </div>
+      <button class="btn btn-success" type="submit">Register</button>
+    </form>
+  </div>
+</div>
+{% endblock %}

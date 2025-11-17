@@ -194,7 +194,13 @@ VALUES
 (2, 'Fashion', 'Clothing, footwear, and accessories', NULL),
 (3, 'Home & Kitchen', 'Furniture, decor, and kitchenware', NULL),
 (4, 'Books', 'Fiction, non-fiction, and academic books', NULL),
-(5, 'Audio', 'Headphones, speakers, and audio equipment', 1);
+(5, 'Audio', 'Headphones, speakers, and audio equipment', 1),
+(6, 'Laptops', 'Portable personal computers and notebooks', 1),
+(7, 'Smartphones', 'Mobile phones and communication devices', 1),
+(8, 'Wearables', 'Smartwatches and fitness trackers', 1),
+(9, 'Footwear', 'Shoes and sneakers for various activities', 2),
+(10, 'Cameras', 'Digital and mirrorless cameras', 1);
+
 
 INSERT INTO Product (ProductID, Prod_Name, Description, CategoryID)
 VALUES
@@ -202,16 +208,55 @@ VALUES
 (2, 'Smartphone Stand', 'Adjustable metal stand for phones', 1),
 (3, 'Cotton T-shirt', 'Unisex casual t-shirt', 2),
 (4, 'Ceramic Dinner Set', '16-piece dinnerware set', 3),
-(5, 'The Midnight Labyrinth', 'Bestselling fantasy fiction book', 4);
+(5, 'The Midnight Labyrinth', 'Bestselling fantasy fiction book', 4),
+(11, 'iPhone 15 Pro', 'Apple smartphone with A17 Pro chip and 120Hz display.', 7),
+(12, 'Samsung Galaxy Z Fold 5', 'Foldable smartphone with AMOLED display.', 7),
+(13, 'Sony WF-1000XM5', 'Premium noise-cancelling wireless earbuds.', 5),
+(14, 'MacBook Air M3', 'Lightweight Apple laptop with M3 chip.', 6),
+(15, 'HP Spectre x360', 'Convertible laptop with touchscreen display.', 6),
+(16, 'Fitbit Versa 5', 'Smartwatch with advanced fitness tracking.', 8),
+(17, 'Nike Metcon 9', 'Training shoes built for performance and stability.', 9),
+(18, 'Adidas NMD V3', 'Stylish lifestyle sneakers with boost comfort.', 9),
+(19, 'Canon EOS R8', 'Compact full-frame mirrorless camera.', 10),
+(20, 'GoPro Max 2', '360° action camera with 6K recording.', 10);
+
 
 INSERT INTO ProductVariant (ProductID, Size, Color, Price, Stock)
 VALUES
-(1, 'OS', 'Black', 4999.99, 25),
-(2, 'OS', 'Silver', 899.00, 100),
-(3, 'M', 'White', 599.00, 100),
-(3, 'L', 'Blue', 599.00, 100),
-(4, 'OS', 'Ivory', 2499.00, 40),
-(5, 'Paperback', 'N/A', 399.00, 75);
+(1, 'OS', 'Black', 199.99, 50),
+(1, 'OS', 'White', 199.99, 30),
+(2, 'OS', 'Silver', 19.99, 100),
+(2, 'OS', 'Black', 19.99, 80),
+(3, 'S', 'Blue', 29.99, 100),
+(3, 'M', 'Blue', 29.99, 100),
+(3, 'L', 'Red', 29.99, 80),
+(3, 'XL', 'Red', 29.99, 60),
+(4, '16pc', 'White', 79.99, 50),
+(4, '16pc', 'Blue', 79.99, 30),
+(5, 'Paperback', 'N/A', 14.99, 200),
+(5, 'Hardcover', 'N/A', 24.99, 100),
+(11, '256GB', 'Silver', 1299.99, 20),
+(11, '512GB', 'Gold', 1499.99, 15),
+(12, '512GB', 'Black', 1499.99, 15),
+(12, '1TB', 'Silver', 1699.99, 10),
+(13, 'OS', 'Black', 249.99, 40),
+(13, 'OS', 'Silver', 249.99, 35),
+(14, '256GB', 'Silver', 999.99, 25),
+(14, '512GB', 'Space Gray', 1299.99, 15),
+(15, '512GB', 'Black', 1099.99, 20),
+(15, '1TB', 'Silver', 1299.99, 10),
+(16, 'OS', 'Black', 199.99, 60),
+(16, 'OS', 'Rose Gold', 199.99, 50),
+(17, '8', 'Black', 149.99, 40),
+(17, '9', 'White', 149.99, 35),
+(17, '10', 'Blue', 149.99, 25),
+(18, '8', 'Black', 139.99, 30),
+(18, '9', 'White', 139.99, 30),
+(18, '10', 'Red', 139.99, 20),
+(19, 'Body', 'Black', 2499.99, 10),
+(19, 'Kit', 'Black', 2799.99, 8),
+(20, 'Standard', 'Black', 499.99, 15),
+(20, 'Bundle', 'Black', 599.99, 10);
 
 INSERT INTO Orders (OrderID, CustomerID, OrderDate, Status, ShippingAddressID, TotalAmount)
 VALUES
@@ -832,3 +877,28 @@ BEGIN
 END $$
 DELIMITER ;
 DROP TRIGGER IF EXISTS payment_auto_date;
+
+
+
+
+-- 1. Add the new column
+ALTER TABLE Product
+ADD ImageURL VARCHAR(255) DEFAULT NULL;
+
+-- 2. Populate the image paths for all 20 products
+-- (Assumes you place these image files in your 'backend/static/images/' folder)
+UPDATE Product SET ImageURL = 'over_ear_headphones.jpg' WHERE ProductID = 1;
+UPDATE Product SET ImageURL = 'smartphone_stand.jpg' WHERE ProductID = 2;
+UPDATE Product SET ImageURL = 'cotton_shirt.jpg' WHERE ProductID = 3;
+UPDATE Product SET ImageURL = 'ceramic_dinner.jpg' WHERE ProductID = 4;
+UPDATE Product SET ImageURL = 'midnight_labyrinth.jpg' WHERE ProductID = 5;
+UPDATE Product SET ImageURL = 'iphone15.jpg' WHERE ProductID = 11;
+UPDATE Product SET ImageURL = 'samsung_galaxy_zfold5.jpg' WHERE ProductID = 12;
+UPDATE Product SET ImageURL = 'Sony_WF-1000XM5.jpg' WHERE ProductID = 13;
+UPDATE Product SET ImageURL = 'MacbookAirM3.jpg' WHERE ProductID = 14;
+UPDATE Product SET ImageURL = 'HP_spectrex360.jpg' WHERE ProductID = 15;
+UPDATE Product SET ImageURL = 'fitbit_versa5.jpg' WHERE ProductID = 16;
+UPDATE Product SET ImageURL = 'nike_metcon9.jpg' WHERE ProductID = 17;
+UPDATE Product SET ImageURL = 'Adidad_nmdv3.jpg' WHERE ProductID = 18;
+UPDATE Product SET ImageURL = 'canonEOSr8.jpg' WHERE ProductID = 19;
+UPDATE Product SET ImageURL = 'gopromax2.jpg' WHERE ProductID = 20;

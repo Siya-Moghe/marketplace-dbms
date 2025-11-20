@@ -65,6 +65,7 @@ Included SQL scripts define:
 ---
 
 ## Project Structure
+```
 backend/
 │
 ├── routes/                  # All Flask route handlers
@@ -96,6 +97,7 @@ backend/
 ├── config.py                # Environment/config variables
 ├── requirements.txt         # Python dependencies
 └── retail_store.txt         # SQL schema, triggers, functions
+```
 
 ## Getting Started
 

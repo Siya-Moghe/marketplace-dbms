@@ -146,11 +146,12 @@ http://127.0.0.1:5000/
 
 ## Configuration
 Update the following values inside backend/config.py:
+```
 DB_HOST = "localhost"
 DB_USER = "your_mysql_username"
 DB_PASSWORD = "your_mysql_password"
 DB_NAME = "Retail_Store"
-
+```
 
 
 
